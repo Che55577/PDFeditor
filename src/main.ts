@@ -16,7 +16,8 @@ type Tool =
   | "repair"
   | "watermark"
   | "pagenumbers"
-  | "officetopdf";
+  | "officetopdf"
+  | "tomarkdown";
 type Level = "extreme" | "recommended" | "low";
 
 interface FileInfo {
@@ -67,6 +68,7 @@ const LABEL: Record<Tool, string> = {
   watermark: "加浮水印",
   pagenumbers: "加頁碼",
   officetopdf: "轉成 PDF",
+  tomarkdown: "轉成 Markdown",
 };
 
 const OFFICE_EXTS = [
@@ -90,6 +92,7 @@ const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
   watermark: { name: "PDF", extensions: ["pdf"] },
   pagenumbers: { name: "PDF", extensions: ["pdf"] },
   officetopdf: { name: "Office 文件", extensions: OFFICE_EXTS },
+  tomarkdown: { name: "PDF", extensions: ["pdf"] },
 };
 
 /** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
@@ -204,6 +207,8 @@ function buildOperation(): object {
       return { kind: "repair" };
     case "officetopdf":
       return { kind: "officeToPdf" };
+    case "tomarkdown":
+      return { kind: "toMarkdown" };
     case "watermark": {
       const text = $<HTMLInputElement>("wmText").value.trim();
       if (!text) throw new Error("請輸入浮水印文字");
@@ -412,6 +417,7 @@ function saveFilters(name: string) {
   const known: Record<string, { name: string; extensions: string[] }> = {
     jpg: { name: "JPEG 圖片", extensions: ["jpg"] },
     png: { name: "PNG 圖片", extensions: ["png"] },
+    md: { name: "Markdown", extensions: ["md"] },
   };
   return [known[ext] ?? { name: "PDF", extensions: ["pdf"] }];
 }

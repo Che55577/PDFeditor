@@ -225,6 +225,36 @@ pub fn render_page(
     }
 }
 
+/// 抽出整份文件的文字。
+///
+/// 走 `txtwrite` 裝置是因為它會處理字型編碼與來源字型的 ToUnicode CMap——
+/// 自己剖析內容串流的話，中文 PDF 幾乎一定會拿到亂碼。
+///
+/// 輸出導到 stdout 而不是暫存檔：文字內容一個位元組都不落地。
+pub fn extract_text(gs: &Path, input: &Path) -> Result<String, String> {
+    let out = build_cmd(gs)
+        .args([
+            "-dSAFER",
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-sDEVICE=txtwrite",
+            "-sOutputFile=-",
+        ])
+        .arg(input)
+        .output()
+        .map_err(|e| format!("無法執行文字抽取：{e}"))?;
+
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "文字抽取失敗：{}",
+            err.lines().last().unwrap_or("未知錯誤").trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// 重建損毀的 PDF。
 ///
 /// Ghostscript 的剖析器容錯性很高——交叉參照表壞掉、物件缺尾、串流長度錯誤

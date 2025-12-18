@@ -3,6 +3,7 @@ mod ephemeral;
 mod font;
 mod gs;
 mod images;
+mod markdown;
 mod office;
 mod pages;
 
@@ -67,6 +68,8 @@ enum Operation {
     },
     /// Word / Excel / PowerPoint 轉 PDF
     OfficeToPdf,
+    /// 抽出文字並整理成 Markdown
+    ToMarkdown,
 }
 
 impl Operation {
@@ -79,7 +82,10 @@ impl Operation {
     fn needs_gs(&self) -> bool {
         matches!(
             self,
-            Operation::Compress { .. } | Operation::ToImage { .. } | Operation::Repair
+            Operation::Compress { .. }
+                | Operation::ToImage { .. }
+                | Operation::Repair
+                | Operation::ToMarkdown
         )
     }
 
@@ -90,6 +96,7 @@ impl Operation {
     fn extension(&self) -> &'static str {
         match self {
             Operation::ToImage { format, .. } => format.extension(),
+            Operation::ToMarkdown => "md",
             _ => "pdf",
         }
     }
@@ -401,6 +408,12 @@ fn execute(op: &Operation, batch: &[String], tools: Tools, root: &Path) -> Resul
             )?;
             Ok(vec![out])
         }
+        Operation::ToMarkdown => {
+            let gs = gs.ok_or("找不到文字抽取引擎（Ghostscript）")?;
+            let out = one("")?;
+            markdown::to_markdown(gs, &src, out.0.path())?;
+            Ok(vec![out])
+        }
         Operation::OfficeToPdf => {
             let soffice = tools.office.ok_or("找不到 LibreOffice")?;
             let out = one("")?;
@@ -588,6 +601,25 @@ mod tests {
         }
         let op = Operation::ToImage { dpi: 5000, format: gs::ImageFormat::Jpeg };
         assert!(run(&op, &src, &eph_root()).is_err());
+    }
+
+    /// 端到端：真的從 PDF 抽出中文並整理成 Markdown。
+    ///
+    /// markdown.rs 的單元測試用的是固定樣本，證明不了 Ghostscript 那一段；
+    /// 中文編碼是這條路徑最容易壞的地方，所以這裡要用真檔案跑一次。
+    #[test]
+    fn markdown_extracts_real_chinese_text() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        if gs::locate(None).is_none() {
+            eprintln!("跳過：找不到 Ghostscript");
+            return;
+        }
+        let root = eph_root();
+        let out = run(&Operation::ToMarkdown, &src, &root).unwrap();
+        let text = std::fs::read_to_string(out[0].0.path()).unwrap();
+
+        assert!(text.contains("壓縮測試"), "中文應該正確抽出，實得開頭：{:?}", &text[..80.min(text.len())]);
+        assert!(text.contains('#'), "應該有偵測到標題");
     }
 
     #[test]

@@ -29,6 +29,7 @@
         <button type="button" data-tool="watermark">浮水印</button>
         <button type="button" data-tool="pagenumbers">頁碼</button>
         <button type="button" data-tool="officetopdf">Office 轉 PDF</button>
+        <button type="button" data-tool="tomarkdown">轉成 Markdown</button>
       </nav>
 
       <section id="drop" class="drop">
@@ -168,6 +169,13 @@
             <input id="pnPages" type="text" placeholder="例如 2-99" />
           </label>
         </div>
+
+        <p class="hint" data-for="tomarkdown">
+          抽出文字並整理成 Markdown：接回被自動換行截斷的段落、辨識清單與標題。
+          <br />
+          限制：文字抽取拿不到字級，所以標題層級是依版面推測的，只分文件標題與章節兩層。
+          掃描件沒有可抽取的文字，需要先做 OCR。
+        </p>
 
         <p class="hint" data-for="officetopdf">
           Word、Excel、PowerPoint 轉 PDF，透過系統上的 LibreOffice 處理，檔案一樣不離開這台電腦。
