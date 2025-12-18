@@ -53,6 +53,11 @@ npm install
 npm run tauri dev
 ```
 
+⚠️ **不要直接執行 `target/debug/localpdf.exe`。** debug 建置會去載入 `tauri.conf.json` 裡的
+`devUrl`（`http://localhost:1420`）取得前端，沒開 Vite 開發伺服器就只會看到
+`ERR_CONNECTION_REFUSED`。要獨立執行請用 `npm run tauri build` 產生的 release 版，
+那才會把前端資產內嵌進執行檔。
+
 `vendor/ghostscript/` 是壓縮引擎（約 40 MB，未進版控）。取得方式見 `vendor/README.md`。
 
 ## 壓縮參數怎麼定的
