@@ -44,8 +44,55 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
 .engine.ok { color: var(--good); }
 .engine.bad { color: var(--bad); }
 
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 18px 0 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.tools button {
+  padding: 7px 14px;
+  background: none;
+  color: var(--dim);
+  border-radius: 8px;
+}
+.tools button:hover { color: var(--text); }
+.tools button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.options { margin: 16px 0; }
+.hint { margin: 0; font-size: 0.82rem; color: var(--dim); }
+
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field span { font-size: 0.82rem; color: var(--dim); }
+.field input {
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+.field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.rotate-opts { display: grid; gap: 10px; }
+.angles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 0.88rem;
+}
+.angles label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
 .drop {
-  margin: 20px 0 16px;
+  margin: 16px 0;
   padding: 34px 16px;
   border: 2px dashed var(--line);
   border-radius: 12px;
@@ -70,7 +117,7 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 8px;
-  margin: 0 0 16px;
+  margin: 0;
   padding: 0;
   border: 0;
 }
@@ -136,6 +183,7 @@ button.ghost { background: none; border-color: var(--line); color: var(--text); 
 .meta.error { color: var(--bad); white-space: normal; }
 
 .item button { padding: 5px 12px; font-size: 0.82rem; }
+.item button.tiny { padding: 3px 8px; line-height: 1.2; }
 
 .sr-only {
   position: absolute;

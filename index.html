@@ -10,33 +10,68 @@
   <body>
     <main>
       <header>
-        <h1>PDF 壓縮</h1>
-        <p class="sub">檔案不離開這台電腦。壓縮結果在你存檔或關閉視窗後立即從暫存區抹除。</p>
+        <h1>LocalPDF</h1>
+        <p class="sub">檔案不離開這台電腦。處理結果在你存檔或關閉視窗後立即從暫存區抹除。</p>
         <p id="engine" class="engine"></p>
       </header>
+
+      <nav class="tools" id="tools">
+        <button type="button" data-tool="compress" class="active">壓縮</button>
+        <button type="button" data-tool="merge">合併</button>
+        <button type="button" data-tool="extract">擷取頁面</button>
+        <button type="button" data-tool="remove">移除頁面</button>
+        <button type="button" data-tool="rotate">旋轉</button>
+      </nav>
 
       <section id="drop" class="drop">
         <p>把 PDF 拖進來，或<button id="browse" class="link" type="button">選擇檔案</button></p>
       </section>
 
-      <fieldset class="levels">
-        <legend class="sr-only">壓縮程度</legend>
-        <label>
-          <input type="radio" name="level" value="extreme" />
-          <span>極限壓縮<em>檔案最小，畫質明顯下降</em></span>
+      <div class="options">
+        <fieldset class="levels" data-for="compress">
+          <legend class="sr-only">壓縮程度</legend>
+          <label>
+            <input type="radio" name="level" value="extreme" />
+            <span>極限壓縮<em>檔案最小，畫質明顯下降</em></span>
+          </label>
+          <label>
+            <input type="radio" name="level" value="recommended" checked />
+            <span>建議壓縮<em>螢幕上幾乎看不出差異</em></span>
+          </label>
+          <label>
+            <input type="radio" name="level" value="low" />
+            <span>低度壓縮<em>保留列印品質</em></span>
+          </label>
+        </fieldset>
+
+        <p class="hint" data-for="merge">依下方清單由上而下合併，可用 ↑ ↓ 調整順序。</p>
+
+        <label class="field" data-for="extract">
+          <span>保留哪些頁</span>
+          <input id="extractPages" type="text" placeholder="例如 1-3, 7, 10-12" />
         </label>
-        <label>
-          <input type="radio" name="level" value="recommended" checked />
-          <span>建議壓縮<em>螢幕上幾乎看不出差異</em></span>
+
+        <label class="field" data-for="remove">
+          <span>移除哪些頁</span>
+          <input id="removePages" type="text" placeholder="例如 2, 5-6" />
         </label>
-        <label>
-          <input type="radio" name="level" value="low" />
-          <span>低度壓縮<em>保留列印品質</em></span>
-        </label>
-      </fieldset>
+
+        <div class="rotate-opts" data-for="rotate">
+          <label class="field">
+            <span>哪些頁（留空代表全部）</span>
+            <input id="rotatePages" type="text" placeholder="例如 1-3" />
+          </label>
+          <fieldset class="angles">
+            <legend class="sr-only">旋轉角度</legend>
+            <label><input type="radio" name="angle" value="90" checked /><span>順時針 90°</span></label>
+            <label><input type="radio" name="angle" value="180" /><span>180°</span></label>
+            <label><input type="radio" name="angle" value="270" /><span>逆時針 90°</span></label>
+          </fieldset>
+        </div>
+      </div>
 
       <div class="actions">
-        <button id="run" type="button" disabled>開始壓縮</button>
+        <button id="run" type="button" disabled>執行</button>
         <button id="saveAll" type="button" class="ghost" hidden>全部儲存到資料夾…</button>
         <button id="clear" type="button" class="ghost" hidden>全部清除</button>
       </div>
