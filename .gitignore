@@ -1,0 +1,32 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 壓縮引擎（約 40MB，取得方式見 vendor/README.md）
+vendor/ghostscript/
+
+# 測試語料與中間產物皆可重新產生；results.csv 與 legibility.png 是量測結論，要進版控
+bench/corpus/
+bench/_work/
+__pycache__/

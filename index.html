@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>LocalPDF</title>
+  </head>
+
+  <body>
+    <main>
+      <header>
+        <h1>PDF 壓縮</h1>
+        <p class="sub">檔案不離開這台電腦。壓縮結果在你存檔或關閉視窗後立即從暫存區抹除。</p>
+        <p id="engine" class="engine"></p>
+      </header>
+
+      <section id="drop" class="drop">
+        <p>把 PDF 拖進來，或<button id="browse" class="link" type="button">選擇檔案</button></p>
+      </section>
+
+      <fieldset class="levels">
+        <legend class="sr-only">壓縮程度</legend>
+        <label>
+          <input type="radio" name="level" value="extreme" />
+          <span>極限壓縮<em>檔案最小，畫質明顯下降</em></span>
+        </label>
+        <label>
+          <input type="radio" name="level" value="recommended" checked />
+          <span>建議壓縮<em>螢幕上幾乎看不出差異</em></span>
+        </label>
+        <label>
+          <input type="radio" name="level" value="low" />
+          <span>低度壓縮<em>保留列印品質</em></span>
+        </label>
+      </fieldset>
+
+      <div class="actions">
+        <button id="run" type="button" disabled>開始壓縮</button>
+        <button id="saveAll" type="button" class="ghost" hidden>全部儲存到資料夾…</button>
+        <button id="clear" type="button" class="ghost" hidden>全部清除</button>
+      </div>
+
+      <p id="status" class="status" role="status"></p>
+      <ul id="list" class="list"></ul>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
