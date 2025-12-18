@@ -13,7 +13,10 @@ type Tool =
   | "split"
   | "toimage"
   | "imagestopdf"
-  | "repair";
+  | "repair"
+  | "watermark"
+  | "pagenumbers"
+  | "officetopdf";
 type Level = "extreme" | "recommended" | "low";
 
 interface FileInfo {
@@ -61,7 +64,16 @@ const LABEL: Record<Tool, string> = {
   toimage: "轉成圖片",
   imagestopdf: "轉成 PDF",
   repair: "修復",
+  watermark: "加浮水印",
+  pagenumbers: "加頁碼",
+  officetopdf: "轉成 PDF",
 };
+
+const OFFICE_EXTS = [
+  "doc", "docx", "rtf", "odt", "txt",
+  "xls", "xlsx", "ods", "csv",
+  "ppt", "pptx", "odp",
+];
 
 /** 每個工具吃什麼檔案。只有 JPG 轉 PDF 收圖片。 */
 const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
@@ -75,6 +87,9 @@ const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
   split: { name: "PDF", extensions: ["pdf"] },
   toimage: { name: "PDF", extensions: ["pdf"] },
   repair: { name: "PDF", extensions: ["pdf"] },
+  watermark: { name: "PDF", extensions: ["pdf"] },
+  pagenumbers: { name: "PDF", extensions: ["pdf"] },
+  officetopdf: { name: "Office 文件", extensions: OFFICE_EXTS },
 };
 
 /** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
@@ -187,7 +202,60 @@ function buildOperation(): object {
     }
     case "repair":
       return { kind: "repair" };
+    case "officetopdf":
+      return { kind: "officeToPdf" };
+    case "watermark": {
+      const text = $<HTMLInputElement>("wmText").value.trim();
+      if (!text) throw new Error("請輸入浮水印文字");
+      const spec = $<HTMLInputElement>("wmPages").value.trim();
+      return {
+        kind: "watermark",
+        text,
+        style: styleFrom("wmFont", "wmSize", "wmColor", num("wmOpacity")),
+        angle: num("wmAngle"),
+        pages: spec ? parsePages(spec, minPages) : [],
+      };
+    }
+    case "pagenumbers": {
+      const template = $<HTMLInputElement>("pnTemplate").value.trim();
+      if (!template) throw new Error("請輸入頁碼格式");
+      const margin = num("pnMargin");
+      if (!Number.isFinite(margin) || margin < 0) throw new Error("邊界必須是 0 或正數");
+      const spec = $<HTMLInputElement>("pnPages").value.trim();
+      return {
+        kind: "pageNumbers",
+        template,
+        style: styleFrom("pnFont", "pnSize", "pnColor", 1),
+        corner: $<HTMLSelectElement>("pnCorner").value,
+        start_at: num("pnStart"),
+        margin: margin * MM_TO_PT,
+        pages: spec ? parsePages(spec, minPages) : [],
+      };
+    }
   }
+}
+
+/** `#rrggbb` → PDF 用的 0–1 三分量。 */
+function hexToRgb(hex: string): [number, number, number] {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) throw new Error(`看不懂的色碼：${hex}`);
+  const n = parseInt(m[1], 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+/** 組出後端 TextStyle 需要的欄位。欄位名是 snake_case，serde 不會幫忙轉。 */
+function styleFrom(fontSel: string, sizeId: string, colorId: string, opacity: number) {
+  const opt = $<HTMLSelectElement>(fontSel).selectedOptions[0];
+  if (!opt) throw new Error("找不到可用的字型");
+  const size = num(sizeId);
+  if (!Number.isFinite(size) || size < 1 || size > 400) throw new Error("字級請設在 1 到 400 之間");
+  return {
+    font_path: opt.value,
+    font_index: Number(opt.dataset.index ?? 0),
+    size,
+    color: hexToRgb($<HTMLInputElement>(colorId).value),
+    opacity,
+  };
 }
 
 const accepted = (path: string) =>
@@ -428,14 +496,42 @@ listen<{ index: number; total: number; name: string }>("op:progress", (e) => {
   setStatus(`處理中 ${e.payload.index + 1}/${e.payload.total}：${e.payload.name}`);
 });
 
-invoke<string>("engine_status")
-  .then((v) => {
-    engineEl.textContent = `壓縮引擎就緒（Ghostscript ${v}）`;
-    engineEl.className = "engine ok";
-  })
-  .catch((e) => {
-    engineEl.textContent = `${e} － 壓縮功能無法使用，其他工具不受影響`;
-    engineEl.className = "engine bad";
-  });
+interface FontChoice {
+  label: string;
+  path: string;
+  index: number;
+}
 
+async function loadFonts() {
+  const fonts = await invoke<FontChoice[]>("list_fonts");
+  for (const sel of document.querySelectorAll<HTMLSelectElement>("select.fontpick")) {
+    sel.innerHTML = "";
+    for (const f of fonts) {
+      const opt = document.createElement("option");
+      opt.value = f.path;
+      opt.dataset.index = String(f.index);
+      opt.textContent = f.label;
+      sel.append(opt);
+    }
+  }
+  if (fonts.length === 0) setStatus("找不到可用的字型，浮水印與頁碼無法使用。");
+}
+
+interface Engines {
+  ghostscript: string | null;
+  libreoffice: string | null;
+}
+
+async function showEngines() {
+  const e = await invoke<Engines>("engine_status");
+  const parts: string[] = [];
+  parts.push(e.ghostscript ? `Ghostscript ${e.ghostscript}` : "Ghostscript 缺失（壓縮／轉圖／修復無法使用）");
+  // LibreOffice 不隨程式打包，沒有是正常情況，不該顯示成錯誤。
+  parts.push(e.libreoffice ? e.libreoffice : "未偵測到 LibreOffice（Office 轉檔無法使用）");
+  engineEl.textContent = parts.join("　·　");
+  engineEl.className = e.ghostscript ? "engine ok" : "engine bad";
+}
+
+void loadFonts();
+void showEngines();
 render();

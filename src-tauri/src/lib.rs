@@ -1,6 +1,9 @@
+mod annotate;
 mod ephemeral;
+mod font;
 mod gs;
 mod images;
+mod office;
 mod pages;
 
 use std::collections::HashMap;
@@ -14,6 +17,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     /// 壓縮引擎路徑。找不到時為 None，UI 會顯示引擎缺失而不是讓每次操作都失敗。
     gs: Option<PathBuf>,
+    /// LibreOffice。這個不隨程式打包（350 MB 太重），偵測系統既有安裝。
+    office: Option<PathBuf>,
     /// 所有落地的暫存檔都只會出現在這個目錄下。
     eph_root: PathBuf,
     /// 已完成、等待使用者儲存的結果。從這裡移除即代表抹除。
@@ -44,6 +49,24 @@ enum Operation {
     ImagesToPdf { margin: f64 },
     /// 重建損毀的檔案
     Repair,
+    /// 斜向文字浮水印
+    Watermark {
+        text: String,
+        style: annotate::TextStyle,
+        angle: f64,
+        pages: Vec<u32>,
+    },
+    /// 頁碼。template 內的 {n} 與 {total} 會被替換
+    PageNumbers {
+        template: String,
+        style: annotate::TextStyle,
+        corner: annotate::Corner,
+        start_at: i64,
+        margin: f64,
+        pages: Vec<u32>,
+    },
+    /// Word / Excel / PowerPoint 轉 PDF
+    OfficeToPdf,
 }
 
 impl Operation {
@@ -58,6 +81,10 @@ impl Operation {
             self,
             Operation::Compress { .. } | Operation::ToImage { .. } | Operation::Repair
         )
+    }
+
+    fn needs_office(&self) -> bool {
+        matches!(self, Operation::OfficeToPdf)
     }
 
     fn extension(&self) -> &'static str {
@@ -87,10 +114,53 @@ struct FileInfo {
     error: Option<String>,
 }
 
+#[derive(serde::Serialize)]
+struct Engines {
+    /// 隨程式打包，一定有；為 None 代表安裝檔不完整。
+    ghostscript: Option<String>,
+    /// 需使用者自行安裝，沒有屬正常情況。
+    libreoffice: Option<String>,
+}
+
 #[tauri::command]
-fn engine_status(state: State<'_, AppState>) -> Result<String, String> {
-    let gs = state.gs.as_ref().ok_or("找不到壓縮引擎（Ghostscript）")?;
-    gs::version(gs)
+fn engine_status(state: State<'_, AppState>) -> Engines {
+    Engines {
+        ghostscript: state.gs.as_ref().and_then(|p| gs::version(p).ok()),
+        libreoffice: state.office.as_ref().and_then(|p| office::version(p).ok()),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct FontChoice {
+    label: String,
+    path: String,
+    index: u32,
+}
+
+/// 系統上可用的字型。浮水印與頁碼要內嵌字型，中文尤其挑不得。
+#[tauri::command]
+fn list_fonts() -> Vec<FontChoice> {
+    // 標楷體排第一：它是單一 TTF（好處理），而且是台灣公文書最常用的字體。
+    const CANDIDATES: &[(&str, &str, u32)] = &[
+        ("標楷體", "kaiu.ttf", 0),
+        ("微軟正黑體", "msjh.ttc", 0),
+        ("新細明體", "mingliu.ttc", 0),
+        ("Arial", "arial.ttf", 0),
+        ("Calibri", "calibri.ttf", 0),
+    ];
+    let dir = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+        .join("Fonts");
+    CANDIDATES
+        .iter()
+        .filter_map(|(label, file, index)| {
+            let path = dir.join(file);
+            path.exists().then(|| FontChoice {
+                label: label.to_string(),
+                path: path.to_string_lossy().to_string(),
+                index: *index,
+            })
+        })
+        .collect()
 }
 
 /// 讀取檔案基本資訊。頁數讓 UI 能顯示並驗證頁碼範圍。
@@ -132,8 +202,12 @@ async fn run_op(
     if op.needs_gs() && state.gs.is_none() {
         return Err("找不到 Ghostscript 引擎，此功能無法使用".into());
     }
+    if op.needs_office() && state.office.is_none() {
+        return Err("找不到 LibreOffice。Office 轉檔需要先安裝它，安裝後請重新啟動本程式".into());
+    }
     let root = state.eph_root.clone();
     let gs = state.gs.clone();
+    let office = state.office.clone();
 
     // 合併是唯一的「多進一出」，輸入清單整批送進去跑一次。
     let batches: Vec<Vec<String>> = if op.merges() {
@@ -162,10 +236,10 @@ async fn run_op(
             .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
             .sum();
 
-        let (op2, gs, root) = (op.clone(), gs.clone(), root.clone());
+        let (op2, gs, office, root) = (op.clone(), gs.clone(), office.clone(), root.clone());
         let outcome = tauri::async_runtime::spawn_blocking(move || {
             // 失敗時所有 Ephemeral 在此函式結束就被 Drop 抹除，不需要額外清理。
-            execute(&op2, &batch, gs.as_deref(), &root)
+            execute(&op2, &batch, Tools { gs: gs.as_deref(), office: office.as_deref() }, &root)
         })
         .await
         .map_err(|e| format!("工作執行緒異常：{e}"))?;
@@ -201,12 +275,20 @@ async fn run_op(
 /// 一次操作的產出：暫存檔，以及要接在來源檔名後面的字尾。
 type Outputs = Vec<(Ephemeral, String)>;
 
+/// 外部引擎的路徑。兩個都可能不存在，由各分支自行要求。
+#[derive(Clone, Copy)]
+struct Tools<'a> {
+    gs: Option<&'a Path>,
+    office: Option<&'a Path>,
+}
+
 /// 實際執行一次操作。跑在 blocking pool 上。
 ///
 /// 回傳多個輸出而非單一檔案，是因為分割與轉圖天生就是一進多出。
 /// 中途失敗時已建立的 Ephemeral 會隨著 Vec 一起 Drop，全部抹除。
-fn execute(op: &Operation, batch: &[String], gs: Option<&Path>, root: &Path) -> Result<Outputs, String> {
+fn execute(op: &Operation, batch: &[String], tools: Tools, root: &Path) -> Result<Outputs, String> {
     let src = PathBuf::from(&batch[0]);
+    let gs = tools.gs;
     let one = |suffix: &str| -> Result<(Ephemeral, String), String> {
         Ephemeral::new(root)
             .map(|e| (e, suffix.to_string()))
@@ -300,6 +382,34 @@ fn execute(op: &Operation, batch: &[String], gs: Option<&Path>, root: &Path) -> 
             gs::repair(gs, &src, out.0.path())?;
             Ok(vec![out])
         }
+        Operation::Watermark { text, style, angle, pages: targets } => {
+            let out = one("_watermarked")?;
+            annotate::watermark(&src, out.0.path(), text, style, *angle, targets)?;
+            Ok(vec![out])
+        }
+        Operation::PageNumbers { template, style, corner, start_at, margin, pages: targets } => {
+            let out = one("_numbered")?;
+            annotate::page_numbers(
+                &src,
+                out.0.path(),
+                template,
+                style,
+                *corner,
+                *start_at,
+                *margin,
+                targets,
+            )?;
+            Ok(vec![out])
+        }
+        Operation::OfficeToPdf => {
+            let soffice = tools.office.ok_or("找不到 LibreOffice")?;
+            let out = one("")?;
+            // LibreOffice 只能指定輸出資料夾不能指定檔名，所以先讓它寫進暫存根目錄
+            // 底下的工作區——這樣萬一當掉，啟動掃除也涵蓋得到。
+            let workdir = root.join(format!("office-{}", out.0.path().file_name().unwrap().to_string_lossy()));
+            office::to_pdf(soffice, &src, &workdir, out.0.path())?;
+            Ok(vec![out])
+        }
     }
 }
 
@@ -377,7 +487,14 @@ mod tests {
     }
 
     fn run(op: &Operation, src: &Path, root: &Path) -> Result<Outputs, String> {
-        execute(op, &[src.to_string_lossy().into()], gs::locate(None).as_deref(), root)
+        let gs = gs::locate(None);
+        let office = office::locate();
+        execute(
+            op,
+            &[src.to_string_lossy().into()],
+            Tools { gs: gs.as_deref(), office: office.as_deref() },
+            root,
+        )
     }
 
     #[test]
@@ -537,6 +654,7 @@ pub fn run() {
 
             app.manage(AppState {
                 gs,
+                office: office::locate(),
                 eph_root,
                 jobs: Mutex::new(HashMap::new()),
             });
@@ -551,6 +669,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             engine_status,
+            list_fonts,
             inspect,
             run_op,
             save_job,

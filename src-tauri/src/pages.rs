@@ -123,7 +123,7 @@ fn as_rect(doc: &Document, obj: &Object) -> Option<[f64; 4]> {
 }
 
 /// MediaBox 與 CropBox 是可繼承屬性——頁面自己沒有時要往 /Parent 找。
-fn inherited_rect(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f64; 4]> {
+pub fn inherited_rect(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f64; 4]> {
     let mut id = page_id;
     for _ in 0..32 {
         let dict = doc.get_object(id).ok()?.as_dict().ok()?;

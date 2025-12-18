@@ -26,6 +26,9 @@
         <button type="button" data-tool="toimage">轉成圖片</button>
         <button type="button" data-tool="imagestopdf">JPG 轉 PDF</button>
         <button type="button" data-tool="repair">修復</button>
+        <button type="button" data-tool="watermark">浮水印</button>
+        <button type="button" data-tool="pagenumbers">頁碼</button>
+        <button type="button" data-tool="officetopdf">Office 轉 PDF</button>
       </nav>
 
       <section id="drop" class="drop">
@@ -111,6 +114,64 @@
 
         <p class="hint" data-for="repair">
           重建結構損毀的 PDF。不會順便壓縮——救回來之後想縮小，再跑一次「壓縮」即可。
+        </p>
+
+        <div class="stack" data-for="watermark">
+          <label class="field">
+            <span>浮水印文字</span>
+            <input id="wmText" type="text" placeholder="例如 機密文件" value="機密文件" />
+          </label>
+          <div class="grid">
+            <label class="field">
+              <span>字型</span>
+              <select id="wmFont" class="fontpick"></select>
+            </label>
+            <label class="field"><span>字級</span><input id="wmSize" type="number" min="1" max="400" value="60" /></label>
+            <label class="field"><span>角度</span><input id="wmAngle" type="number" min="-180" max="180" value="45" /></label>
+            <label class="field"><span>透明度</span><input id="wmOpacity" type="number" min="0" max="1" step="0.05" value="0.25" /></label>
+            <label class="field"><span>顏色</span><input id="wmColor" type="color" value="#808080" /></label>
+          </div>
+          <label class="field">
+            <span>哪些頁（留空代表全部）</span>
+            <input id="wmPages" type="text" placeholder="例如 1-3" />
+          </label>
+        </div>
+
+        <div class="stack" data-for="pagenumbers">
+          <label class="field">
+            <span>格式（<code>{n}</code> 是頁碼，<code>{total}</code> 是總頁數）</span>
+            <input id="pnTemplate" type="text" value="{n}" placeholder="例如 第 {n} 頁，共 {total} 頁" />
+          </label>
+          <div class="grid">
+            <label class="field">
+              <span>位置</span>
+              <select id="pnCorner">
+                <option value="bottomCenter" selected>下方置中</option>
+                <option value="bottomLeft">左下</option>
+                <option value="bottomRight">右下</option>
+                <option value="topCenter">上方置中</option>
+                <option value="topLeft">左上</option>
+                <option value="topRight">右上</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>字型</span>
+              <select id="pnFont" class="fontpick"></select>
+            </label>
+            <label class="field"><span>字級</span><input id="pnSize" type="number" min="1" max="400" value="11" /></label>
+            <label class="field"><span>起始頁碼</span><input id="pnStart" type="number" value="1" /></label>
+            <label class="field"><span>邊界（公釐）</span><input id="pnMargin" type="number" min="0" value="12" /></label>
+            <label class="field"><span>顏色</span><input id="pnColor" type="color" value="#333333" /></label>
+          </div>
+          <label class="field">
+            <span>哪些頁（留空代表全部）</span>
+            <input id="pnPages" type="text" placeholder="例如 2-99" />
+          </label>
+        </div>
+
+        <p class="hint" data-for="officetopdf">
+          Word、Excel、PowerPoint 轉 PDF，透過系統上的 LibreOffice 處理，檔案一樣不離開這台電腦。
+          只做這個方向——反向的 PDF 轉 Word 產出的是一堆文字方塊拼成的版面，實務上不能用，所以不做。
         </p>
       </div>
 
