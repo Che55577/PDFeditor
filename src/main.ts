@@ -11,7 +11,9 @@ type Tool =
   | "rotate"
   | "crop"
   | "split"
-  | "tojpeg";
+  | "toimage"
+  | "imagestopdf"
+  | "repair";
 type Level = "extreme" | "recommended" | "low";
 
 interface FileInfo {
@@ -56,7 +58,23 @@ const LABEL: Record<Tool, string> = {
   rotate: "旋轉",
   crop: "裁切",
   split: "分割",
-  tojpeg: "轉成 JPG",
+  toimage: "轉成圖片",
+  imagestopdf: "轉成 PDF",
+  repair: "修復",
+};
+
+/** 每個工具吃什麼檔案。只有 JPG 轉 PDF 收圖片。 */
+const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
+  imagestopdf: { name: "JPEG 圖片", extensions: ["jpg", "jpeg"] },
+  compress: { name: "PDF", extensions: ["pdf"] },
+  merge: { name: "PDF", extensions: ["pdf"] },
+  extract: { name: "PDF", extensions: ["pdf"] },
+  remove: { name: "PDF", extensions: ["pdf"] },
+  rotate: { name: "PDF", extensions: ["pdf"] },
+  crop: { name: "PDF", extensions: ["pdf"] },
+  split: { name: "PDF", extensions: ["pdf"] },
+  toimage: { name: "PDF", extensions: ["pdf"] },
+  repair: { name: "PDF", extensions: ["pdf"] },
 };
 
 /** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
@@ -153,25 +171,39 @@ function buildOperation(): object {
       if (!Number.isInteger(chunk) || chunk < 1) throw new Error("每份頁數必須是 1 以上的整數");
       return { kind: "split", chunk };
     }
-    case "tojpeg": {
-      const dpi = num("jpegDpi");
+    case "toimage": {
+      const dpi = num("imageDpi");
       if (!Number.isInteger(dpi) || dpi < 20 || dpi > 600) {
         throw new Error("解析度請設在 20 到 600 DPI 之間");
       }
-      return { kind: "toJpeg", dpi };
+      const format = document.querySelector<HTMLInputElement>('input[name="imgfmt"]:checked')!
+        .value;
+      return { kind: "toImage", dpi, format };
     }
+    case "imagestopdf": {
+      const mm = num("imgMargin");
+      if (!Number.isFinite(mm) || mm < 0) throw new Error("留白必須是 0 或正數");
+      return { kind: "imagesToPdf", margin: mm * MM_TO_PT };
+    }
+    case "repair":
+      return { kind: "repair" };
   }
 }
 
+const accepted = (path: string) =>
+  ACCEPTS[tool].extensions.some((e) => path.toLowerCase().endsWith(`.${e}`));
+
 async function addFiles(paths: string[]) {
-  const pdfs = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
-  const skipped = paths.length - pdfs.length;
-  const fresh = pdfs.filter((p) => !files.some((f) => f.path === p));
+  const keep = paths.filter(accepted);
+  const skipped = paths.length - keep.length;
+  const fresh = keep.filter((p) => !files.some((f) => f.path === p));
   if (fresh.length) {
     files = [...files, ...(await invoke<FileInfo[]>("inspect", { paths: fresh }))];
   }
   render();
-  if (skipped > 0) setStatus(`已略過 ${skipped} 個非 PDF 檔案`);
+  if (skipped > 0) {
+    setStatus(`已略過 ${skipped} 個檔案：「${LABEL[tool]}」只接受 ${ACCEPTS[tool].name}`);
+  }
 }
 
 function move(index: number, delta: number) {
@@ -192,11 +224,13 @@ function renderPending() {
 
     const meta = document.createElement("span");
     meta.className = f.error ? "meta error" : "meta";
-    meta.textContent = f.error ?? `${fmt(f.bytes)}　${f.pages} 頁`;
+    // 圖片沒有頁數可言。
+    meta.textContent =
+      f.error ?? (f.pages === null ? fmt(f.bytes) : `${fmt(f.bytes)}　${f.pages} 頁`);
     li.append(name, meta);
 
-    // 合併的輸出順序就是這個清單的順序，所以只有合併需要調序。
-    if (tool === "merge" && !f.error) {
+    // 這兩個工具的輸出順序就是清單順序，所以需要調序。
+    if ((tool === "merge" || tool === "imagestopdf") && !f.error) {
       for (const [glyph, delta] of [["↑", -1], ["↓", 1]] as const) {
         const b = document.createElement("button");
         b.type = "button";
@@ -307,9 +341,11 @@ async function runOp() {
 /** 後端已經算好含副檔名的建議檔名，前端不再自己加後綴。 */
 function saveFilters(name: string) {
   const ext = name.split(".").pop()?.toLowerCase() ?? "pdf";
-  return ext === "jpg"
-    ? [{ name: "JPEG 圖片", extensions: ["jpg"] }]
-    : [{ name: "PDF", extensions: ["pdf"] }];
+  const known: Record<string, { name: string; extensions: string[] }> = {
+    jpg: { name: "JPEG 圖片", extensions: ["jpg"] },
+    png: { name: "PNG 圖片", extensions: ["png"] },
+  };
+  return [known[ext] ?? { name: "PDF", extensions: ["pdf"] }];
 }
 
 async function saveOne(r: JobResult) {
@@ -351,7 +387,7 @@ async function clearAll() {
 }
 
 async function browse() {
-  const picked = await open({ multiple: true, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+  const picked = await open({ multiple: true, filters: [ACCEPTS[tool]] });
   if (Array.isArray(picked)) await addFiles(picked);
   else if (typeof picked === "string") await addFiles([picked]);
 }
@@ -360,7 +396,15 @@ toolsEl.onclick = (e) => {
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-tool]");
   if (!btn || busy) return;
   tool = btn.dataset.tool as Tool;
-  setStatus("");
+
+  // 換工具後檔案類型可能不再適用（例如載入 JPG 後切到「壓縮」），先剔掉不合的。
+  const before = files.length;
+  files = files.filter((f) => accepted(f.path));
+  setStatus(
+    files.length < before
+      ? `已移除 ${before - files.length} 個檔案：「${LABEL[tool]}」只接受 ${ACCEPTS[tool].name}`
+      : "",
+  );
   render();
 };
 

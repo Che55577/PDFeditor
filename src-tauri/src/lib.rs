@@ -1,5 +1,6 @@
 mod ephemeral;
 mod gs;
+mod images;
 mod pages;
 
 use std::collections::HashMap;
@@ -37,19 +38,31 @@ enum Operation {
     Crop { pages: Vec<u32>, margins: pages::Margins },
     /// 每 chunk 頁切成一個檔案
     Split { chunk: usize },
-    /// 每頁輸出一張 JPEG
-    ToJpeg { dpi: u32 },
+    /// 每頁輸出一張圖片
+    ToImage { dpi: u32, format: gs::ImageFormat },
+    /// 多張 JPEG 併成一份 PDF；margin 單位為 pt
+    ImagesToPdf { margin: f64 },
+    /// 重建損毀的檔案
+    Repair,
 }
 
 impl Operation {
+    /// 這些是「多進一出」——整批輸入一次處理完，其餘都是每個檔案各跑一次。
     fn merges(&self) -> bool {
-        matches!(self, Operation::Merge)
+        matches!(self, Operation::Merge | Operation::ImagesToPdf { .. })
     }
 
-    /// 輸出的副檔名。目前只有轉圖不是 PDF。
+    /// 需要 Ghostscript 的工具。先擋掉才不會讓每個檔案各失敗一次。
+    fn needs_gs(&self) -> bool {
+        matches!(
+            self,
+            Operation::Compress { .. } | Operation::ToImage { .. } | Operation::Repair
+        )
+    }
+
     fn extension(&self) -> &'static str {
         match self {
-            Operation::ToJpeg { .. } => "jpg",
+            Operation::ToImage { format, .. } => format.extension(),
             _ => "pdf",
         }
     }
@@ -81,6 +94,8 @@ fn engine_status(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 /// 讀取檔案基本資訊。頁數讓 UI 能顯示並驗證頁碼範圍。
+///
+/// 圖片沒有頁數的概念，`pages` 留空即可——不是錯誤，UI 不該把它排除掉。
 #[tauri::command]
 async fn inspect(paths: Vec<String>) -> Vec<FileInfo> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -90,6 +105,9 @@ async fn inspect(paths: Vec<String>) -> Vec<FileInfo> {
                 let path = PathBuf::from(&raw);
                 let name = file_name(&path, &raw);
                 let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                if !name.to_lowercase().ends_with(".pdf") {
+                    return FileInfo { path: raw, name, bytes, pages: None, error: None };
+                }
                 match pages::count(&path) {
                     Ok(n) => FileInfo { path: raw, name, bytes, pages: Some(n), error: None },
                     Err(e) => FileInfo { path: raw, name, bytes, pages: None, error: Some(e) },
@@ -111,8 +129,7 @@ async fn run_op(
     if paths.is_empty() {
         return Err("請先選擇檔案".into());
     }
-    // 只有這兩個工具需要 Ghostscript，先擋掉才不會讓每個檔案各失敗一次。
-    if matches!(op, Operation::Compress { .. } | Operation::ToJpeg { .. }) && state.gs.is_none() {
+    if op.needs_gs() && state.gs.is_none() {
         return Err("找不到 Ghostscript 引擎，此功能無法使用".into());
     }
     let root = state.eph_root.clone();
@@ -259,16 +276,29 @@ fn execute(op: &Operation, batch: &[String], gs: Option<&Path>, root: &Path) -> 
             pages::split(&src, &plan, &dests)?;
             Ok(outs)
         }
-        Operation::ToJpeg { dpi } => {
+        Operation::ToImage { dpi, format } => {
             let gs = gs.ok_or("找不到轉檔引擎（Ghostscript）")?;
             let total = pages::count(&src)?;
             let mut outs: Outputs = Vec::with_capacity(total);
             for page in 1..=total as u32 {
                 let out = one(&format!("_p{page:03}"))?;
-                gs::render_page(gs, &src, page, *dpi, out.0.path())?;
+                gs::render_page(gs, &src, page, *dpi, *format, out.0.path())?;
                 outs.push(out);
             }
             Ok(outs)
+        }
+        Operation::ImagesToPdf { margin } => {
+            let owned: Vec<PathBuf> = batch.iter().map(PathBuf::from).collect();
+            let refs: Vec<&Path> = owned.iter().map(|p| p.as_path()).collect();
+            let out = one("_images")?;
+            images::jpegs_to_pdf(&refs, *margin, out.0.path())?;
+            Ok(vec![out])
+        }
+        Operation::Repair => {
+            let gs = gs.ok_or("找不到修復引擎（Ghostscript）")?;
+            let out = one("_repaired")?;
+            gs::repair(gs, &src, out.0.path())?;
+            Ok(vec![out])
         }
     }
 }
@@ -423,7 +453,8 @@ mod tests {
         }
         let total = pages::count(&src).unwrap();
         let root = eph_root();
-        let out = run(&Operation::ToJpeg { dpi: 72 }, &src, &root).unwrap();
+        let op = Operation::ToImage { dpi: 72, format: gs::ImageFormat::Jpeg };
+        let out = run(&op, &src, &root).unwrap();
 
         assert_eq!(out.len(), total);
         assert_eq!(out[0].1, "_p001");
@@ -433,12 +464,46 @@ mod tests {
     }
 
     #[test]
-    fn to_jpeg_rejects_absurd_dpi() {
+    fn to_image_rejects_absurd_dpi() {
         let Some(src) = corpus("c1_text.pdf") else { return };
         if gs::locate(None).is_none() {
             return;
         }
-        assert!(run(&Operation::ToJpeg { dpi: 5000 }, &src, &eph_root()).is_err());
+        let op = Operation::ToImage { dpi: 5000, format: gs::ImageFormat::Jpeg };
+        assert!(run(&op, &src, &eph_root()).is_err());
+    }
+
+    #[test]
+    fn to_png_produces_png_output() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        if gs::locate(None).is_none() {
+            return;
+        }
+        let root = eph_root();
+        let op = Operation::ToImage { dpi: 72, format: gs::ImageFormat::Png };
+        let out = run(&op, &src, &root).unwrap();
+
+        // PNG 檔頭：89 50 4E 47
+        let head = std::fs::read(out[0].0.path()).unwrap();
+        assert_eq!(&head[..4], &[0x89, 0x50, 0x4E, 0x47], "輸出應該是 PNG");
+    }
+
+    #[test]
+    fn repair_rebuilds_a_truncated_file() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        if gs::locate(None).is_none() {
+            return;
+        }
+        let root = eph_root();
+        // 砍掉尾端 5%，交叉參照表會壞掉——這是最常見的損毀樣態。
+        let data = std::fs::read(&src).unwrap();
+        let broken = root.join("broken.pdf");
+        std::fs::write(&broken, &data[..data.len() * 95 / 100]).unwrap();
+        assert!(pages::count(&broken).is_err(), "前提：這份檔案應該是讀不開的");
+
+        let out = run(&Operation::Repair, &broken, &root).unwrap();
+        let recovered = pages::count(out[0].0.path()).unwrap();
+        assert!(recovered > 0, "修復後應該至少救回一頁");
     }
 
     /// 一進多出時，來源大小只掛在第一筆結果上——否則清單加總會膨脹成好幾倍。

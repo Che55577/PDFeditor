@@ -23,7 +23,9 @@
         <button type="button" data-tool="rotate">旋轉</button>
         <button type="button" data-tool="crop">裁切</button>
         <button type="button" data-tool="split">分割</button>
-        <button type="button" data-tool="tojpeg">轉成 JPG</button>
+        <button type="button" data-tool="toimage">轉成圖片</button>
+        <button type="button" data-tool="imagestopdf">JPG 轉 PDF</button>
+        <button type="button" data-tool="repair">修復</button>
       </nav>
 
       <section id="drop" class="drop">
@@ -90,10 +92,26 @@
           <input id="splitChunk" type="number" min="1" step="1" value="1" />
         </label>
 
-        <label class="field" data-for="tojpeg">
-          <span>解析度（DPI，20–600）</span>
-          <input id="jpegDpi" type="number" min="20" max="600" step="10" value="150" />
+        <div class="rotate-opts" data-for="toimage">
+          <label class="field">
+            <span>解析度（DPI，20–600）</span>
+            <input id="imageDpi" type="number" min="20" max="600" step="10" value="150" />
+          </label>
+          <fieldset class="angles">
+            <legend class="sr-only">圖片格式</legend>
+            <label><input type="radio" name="imgfmt" value="jpeg" checked /><span>JPG（照片、掃描件）</span></label>
+            <label><input type="radio" name="imgfmt" value="png" /><span>PNG（無損，圖表與文字頁）</span></label>
+          </fieldset>
+        </div>
+
+        <label class="field" data-for="imagestopdf">
+          <span>四邊留白（公釐）</span>
+          <input id="imgMargin" type="number" min="0" step="1" value="0" />
         </label>
+
+        <p class="hint" data-for="repair">
+          重建結構損毀的 PDF。不會順便壓縮——救回來之後想縮小，再跑一次「壓縮」即可。
+        </p>
       </div>
 
       <div class="actions">

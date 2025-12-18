@@ -158,26 +158,52 @@ pub fn compress(gs: &Path, input: &Path, output: &Path, level: Level) -> Result<
     }
 }
 
-/// 把單一頁面算成 JPEG。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageFormat {
+    Jpeg,
+    Png,
+}
+
+impl ImageFormat {
+    /// JPEG 適合照片與掃描件，PNG 無損、適合圖表與文字頁。
+    fn device_args(self) -> [&'static str; 2] {
+        match self {
+            ImageFormat::Jpeg => ["-sDEVICE=jpeg", "-dJPEGQ=90"],
+            // png16m 是 24-bit 全彩；pngalpha 會帶透明背景，對文件掃描反而礙事。
+            ImageFormat::Png => ["-sDEVICE=png16m", "-dDownScaleFactor=1"],
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            ImageFormat::Jpeg => "jpg",
+            ImageFormat::Png => "png",
+        }
+    }
+}
+
+/// 把單一頁面算成圖片。
 ///
 /// 刻意一頁一次呼叫，而不是用 Ghostscript 的 `%03d` 樣板一次輸出整份。
 /// 樣板會把檔案寫到我們管不到的名字上，等於在暫存管理之外多開一條路徑；
 /// 一頁一檔則能讓每個位元組都落在受管理的暫存檔裡。代價是每頁多一次行程啟動。
-pub fn render_page(gs: &Path, input: &Path, page: u32, dpi: u32, out: &Path) -> Result<(), String> {
+pub fn render_page(
+    gs: &Path,
+    input: &Path,
+    page: u32,
+    dpi: u32,
+    format: ImageFormat,
+    out: &Path,
+) -> Result<(), String> {
     if !(20..=600).contains(&dpi) {
         return Err("解析度請設在 20 到 600 dpi 之間".into());
     }
     let result = build_cmd(gs)
-        .args([
-            "-dSAFER",
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-dQUIET",
-            "-sDEVICE=jpeg",
-            "-dJPEGQ=90",
-            // 依 CropBox 出圖，否則裁切過的頁面會把已裁掉的部分又畫回來。
-            "-dUseCropBox",
-        ])
+        .args(["-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET"])
+        .args(format.device_args())
+        // 依 CropBox 出圖，否則裁切過的頁面會把已裁掉的部分又畫回來。
+        .arg("-dUseCropBox")
         .arg(format!("-r{dpi}"))
         .arg(format!("-dFirstPage={page}"))
         .arg(format!("-dLastPage={page}"))
@@ -196,6 +222,44 @@ pub fn render_page(gs: &Path, input: &Path, page: u32, dpi: u32, out: &Path) -> 
     match std::fs::metadata(out) {
         Ok(m) if m.len() > 0 => Ok(()),
         _ => Err(format!("第 {page} 頁未產生輸出")),
+    }
+}
+
+/// 重建損毀的 PDF。
+///
+/// Ghostscript 的剖析器容錯性很高——交叉參照表壞掉、物件缺尾、串流長度錯誤
+/// 這些它多半能自行復原，然後重新寫出一份結構正確的檔案。
+///
+/// 這裡刻意關掉所有降採樣並保留原始 JPEG：使用者要的是「把檔案救回來」，
+/// 不是順便被壓縮。修復後想縮小，再跑一次壓縮工具即可。
+pub fn repair(gs: &Path, input: &Path, output: &Path) -> Result<(), String> {
+    let result = build_cmd(gs)
+        .args(base_args())
+        .args([
+            "-dPDFSTOPONERROR=false",
+            "-dPDFSTOPONWARNING=false",
+            "-dDownsampleColorImages=false",
+            "-dDownsampleGrayImages=false",
+            "-dDownsampleMonoImages=false",
+            "-dAutoFilterColorImages=false",
+            "-dPassThroughJPEGImages=true",
+        ])
+        .arg(format!("-sOutputFile={}", output.display()))
+        .arg(input)
+        .output()
+        .map_err(|e| format!("無法執行修復引擎：{e}"))?;
+
+    // 損毀檔幾乎一定會噴警告，所以不能把 stderr 有內容當成失敗；
+    // 唯一可靠的判準是「有沒有生出一份讀得開的 PDF」。
+    match std::fs::metadata(output) {
+        Ok(m) if m.len() > 0 => Ok(()),
+        _ => {
+            let err = String::from_utf8_lossy(&result.stderr);
+            Err(format!(
+                "無法修復：{}",
+                err.lines().last().unwrap_or("檔案損毀程度超出可復原範圍").trim()
+            ))
+        }
     }
 }
 
