@@ -3,7 +3,15 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
-type Tool = "compress" | "merge" | "extract" | "remove" | "rotate";
+type Tool =
+  | "compress"
+  | "merge"
+  | "extract"
+  | "remove"
+  | "rotate"
+  | "crop"
+  | "split"
+  | "tojpeg";
 type Level = "extreme" | "recommended" | "low";
 
 interface FileInfo {
@@ -46,15 +54,15 @@ const LABEL: Record<Tool, string> = {
   extract: "擷取頁面",
   remove: "移除頁面",
   rotate: "旋轉",
+  crop: "裁切",
+  split: "分割",
+  tojpeg: "轉成 JPG",
 };
 
-const SUFFIX: Record<Tool, string> = {
-  compress: "_compressed",
-  merge: "_merged",
-  extract: "_extracted",
-  remove: "_removed",
-  rotate: "_rotated",
-};
+/** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
+const MM_TO_PT = 72 / 25.4;
+
+const num = (id: string) => Number($<HTMLInputElement>(id).value);
 
 const fmt = (n: number) =>
   n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -116,6 +124,41 @@ function buildOperation(): object {
         document.querySelector<HTMLInputElement>('input[name="angle"]:checked')!.value,
       );
       return { kind: "rotate", pages: spec ? parsePages(spec, minPages) : [], degrees };
+    }
+    case "crop": {
+      const spec = $<HTMLInputElement>("cropPages").value.trim();
+      const mm = {
+        top: num("cropTop"),
+        bottom: num("cropBottom"),
+        left: num("cropLeft"),
+        right: num("cropRight"),
+      };
+      if (Object.values(mm).some((v) => !Number.isFinite(v) || v < 0)) {
+        throw new Error("邊界必須是 0 或正數");
+      }
+      if (Object.values(mm).every((v) => v === 0)) throw new Error("請至少設定一邊的裁切量");
+      return {
+        kind: "crop",
+        pages: spec ? parsePages(spec, minPages) : [],
+        margins: {
+          top: mm.top * MM_TO_PT,
+          bottom: mm.bottom * MM_TO_PT,
+          left: mm.left * MM_TO_PT,
+          right: mm.right * MM_TO_PT,
+        },
+      };
+    }
+    case "split": {
+      const chunk = num("splitChunk");
+      if (!Number.isInteger(chunk) || chunk < 1) throw new Error("每份頁數必須是 1 以上的整數");
+      return { kind: "split", chunk };
+    }
+    case "tojpeg": {
+      const dpi = num("jpegDpi");
+      if (!Number.isInteger(dpi) || dpi < 20 || dpi > 600) {
+        throw new Error("解析度請設在 20 到 600 DPI 之間");
+      }
+      return { kind: "toJpeg", dpi };
     }
   }
 }
@@ -261,14 +304,16 @@ async function runOp() {
   }
 }
 
-const outName = (name: string) =>
-  name.replace(/\s.*$/, "").replace(/\.pdf$/i, "") + SUFFIX[tool] + ".pdf";
+/** 後端已經算好含副檔名的建議檔名，前端不再自己加後綴。 */
+function saveFilters(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "pdf";
+  return ext === "jpg"
+    ? [{ name: "JPEG 圖片", extensions: ["jpg"] }]
+    : [{ name: "PDF", extensions: ["pdf"] }];
+}
 
 async function saveOne(r: JobResult) {
-  const dest = await save({
-    defaultPath: outName(r.name),
-    filters: [{ name: "PDF", extensions: ["pdf"] }],
-  });
+  const dest = await save({ defaultPath: r.name, filters: saveFilters(r.name) });
   if (!dest) return;
   try {
     await invoke("save_job", { id: r.id, dest });
@@ -286,7 +331,7 @@ async function saveAll() {
   let saved = 0;
   for (const r of results.filter((x) => !x.error)) {
     try {
-      await invoke("save_job", { id: r.id, dest: `${dir}\\${outName(r.name)}` });
+      await invoke("save_job", { id: r.id, dest: `${dir}\\${r.name}` });
       results = results.filter((x) => x.id !== r.id);
       saved++;
     } catch (e) {

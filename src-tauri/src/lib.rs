@@ -33,17 +33,32 @@ enum Operation {
     Remove { pages: Vec<u32> },
     /// pages 為空代表整份文件
     Rotate { pages: Vec<u32>, degrees: i64 },
+    /// pages 為空代表整份文件；margins 單位為 pt
+    Crop { pages: Vec<u32>, margins: pages::Margins },
+    /// 每 chunk 頁切成一個檔案
+    Split { chunk: usize },
+    /// 每頁輸出一張 JPEG
+    ToJpeg { dpi: u32 },
 }
 
 impl Operation {
     fn merges(&self) -> bool {
         matches!(self, Operation::Merge)
     }
+
+    /// 輸出的副檔名。目前只有轉圖不是 PDF。
+    fn extension(&self) -> &'static str {
+        match self {
+            Operation::ToJpeg { .. } => "jpg",
+            _ => "pdf",
+        }
+    }
 }
 
 #[derive(serde::Serialize, Clone)]
 struct JobResult {
     id: String,
+    /// 建議的輸出檔名，已含副檔名。使用者仍可在儲存對話框改。
     name: String,
     orig_bytes: u64,
     out_bytes: u64,
@@ -96,10 +111,9 @@ async fn run_op(
     if paths.is_empty() {
         return Err("請先選擇檔案".into());
     }
-    if let Operation::Compress { .. } = op {
-        if state.gs.is_none() {
-            return Err("找不到壓縮引擎（Ghostscript）".into());
-        }
+    // 只有這兩個工具需要 Ghostscript，先擋掉才不會讓每個檔案各失敗一次。
+    if matches!(op, Operation::Compress { .. } | Operation::ToJpeg { .. }) && state.gs.is_none() {
+        return Err("找不到 Ghostscript 引擎，此功能無法使用".into());
     }
     let root = state.eph_root.clone();
     let gs = state.gs.clone();
@@ -114,82 +128,157 @@ async fn run_op(
     let mut results = Vec::with_capacity(total);
 
     for (index, batch) in batches.into_iter().enumerate() {
-        let first = PathBuf::from(&batch[0]);
-        let name = if op.merges() {
-            format!("{} 等 {} 個檔案", file_name(&first, &batch[0]), batch.len())
-        } else {
-            file_name(&first, &batch[0])
-        };
+        let source_name = file_name(&PathBuf::from(&batch[0]), &batch[0]);
+        let stem = source_name
+            .rsplit_once('.')
+            .map(|(s, _)| s)
+            .unwrap_or(&source_name)
+            .to_string();
 
         let _ = app.emit(
             "op:progress",
-            serde_json::json!({ "index": index, "total": total, "name": name }),
+            serde_json::json!({ "index": index, "total": total, "name": source_name }),
         );
 
-        let orig_bytes = batch
+        let orig_bytes: u64 = batch
             .iter()
             .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
             .sum();
 
-        let (op, gs, root) = (op.clone(), gs.clone(), root.clone());
+        let (op2, gs, root) = (op.clone(), gs.clone(), root.clone());
         let outcome = tauri::async_runtime::spawn_blocking(move || {
-            // 失敗時 eph 在此函式結束就被 Drop 抹除，不需要額外清理。
-            let eph = Ephemeral::new(&root).map_err(|e| format!("無法建立暫存檔：{e}"))?;
-            execute(&op, &batch, gs.as_deref(), eph.path())?;
-            let out_bytes = std::fs::metadata(eph.path()).map(|m| m.len()).unwrap_or(0);
-            Ok::<_, String>((eph, out_bytes))
+            // 失敗時所有 Ephemeral 在此函式結束就被 Drop 抹除，不需要額外清理。
+            execute(&op2, &batch, gs.as_deref(), &root)
         })
         .await
         .map_err(|e| format!("工作執行緒異常：{e}"))?;
 
-        results.push(match outcome {
-            Ok((eph, out_bytes)) => {
-                let id = file_name(eph.path(), "");
-                state.jobs.lock().unwrap().insert(id.clone(), eph);
-                JobResult { id, name, orig_bytes, out_bytes, error: None }
+        match outcome {
+            Ok(outputs) => {
+                for (nth, (eph, suffix)) in outputs.into_iter().enumerate() {
+                    let id = file_name(eph.path(), "");
+                    let out_bytes = std::fs::metadata(eph.path()).map(|m| m.len()).unwrap_or(0);
+                    state.jobs.lock().unwrap().insert(id.clone(), eph);
+                    results.push(JobResult {
+                        id,
+                        name: format!("{stem}{suffix}.{}", op.extension()),
+                        // 一進多出時只有第一筆掛上來源大小，否則清單加總會膨脹成好幾倍。
+                        orig_bytes: if nth == 0 { orig_bytes } else { 0 },
+                        out_bytes,
+                        error: None,
+                    });
+                }
             }
-            Err(error) => JobResult {
+            Err(error) => results.push(JobResult {
                 id: String::new(),
-                name,
+                name: source_name,
                 orig_bytes,
                 out_bytes: 0,
                 error: Some(error),
-            },
-        });
+            }),
+        }
     }
     Ok(results)
 }
 
+/// 一次操作的產出：暫存檔，以及要接在來源檔名後面的字尾。
+type Outputs = Vec<(Ephemeral, String)>;
+
 /// 實際執行一次操作。跑在 blocking pool 上。
-fn execute(op: &Operation, batch: &[String], gs: Option<&Path>, out: &Path) -> Result<(), String> {
+///
+/// 回傳多個輸出而非單一檔案，是因為分割與轉圖天生就是一進多出。
+/// 中途失敗時已建立的 Ephemeral 會隨著 Vec 一起 Drop，全部抹除。
+fn execute(op: &Operation, batch: &[String], gs: Option<&Path>, root: &Path) -> Result<Outputs, String> {
     let src = PathBuf::from(&batch[0]);
+    let one = |suffix: &str| -> Result<(Ephemeral, String), String> {
+        Ephemeral::new(root)
+            .map(|e| (e, suffix.to_string()))
+            .map_err(|e| format!("無法建立暫存檔：{e}"))
+    };
+
     match op {
         Operation::Compress { level } => {
             let gs = gs.ok_or("找不到壓縮引擎（Ghostscript）")?;
-            gs::compress(gs, &src, out, *level)
+            let out = one("_compressed")?;
+            gs::compress(gs, &src, out.0.path(), *level)?;
+            Ok(vec![out])
         }
         Operation::Merge => {
             let owned: Vec<PathBuf> = batch.iter().map(PathBuf::from).collect();
             let refs: Vec<&Path> = owned.iter().map(|p| p.as_path()).collect();
-            pages::merge(&refs, out)
+            let out = one("_merged")?;
+            pages::merge(&refs, out.0.path())?;
+            Ok(vec![out])
         }
-        Operation::Extract { pages: keep } => pages::select(&src, keep, out),
+        Operation::Extract { pages: keep } => {
+            let out = one("_extracted")?;
+            pages::select(&src, keep, out.0.path())?;
+            Ok(vec![out])
+        }
         Operation::Remove { pages: drop } => {
             let total = pages::count(&src)?;
             let keep: Vec<u32> = (1..=total as u32).filter(|n| !drop.contains(n)).collect();
             if keep.is_empty() {
                 return Err("不能移除所有頁面".into());
             }
-            pages::select(&src, &keep, out)
+            let out = one("_removed")?;
+            pages::select(&src, &keep, out.0.path())?;
+            Ok(vec![out])
         }
         Operation::Rotate { pages: targets, degrees } => {
-            let targets = if targets.is_empty() {
-                (1..=pages::count(&src)? as u32).collect()
-            } else {
-                targets.clone()
-            };
-            pages::rotate(&src, &targets, *degrees, out)
+            let targets = expand(targets, &src)?;
+            let out = one("_rotated")?;
+            pages::rotate(&src, &targets, *degrees, out.0.path())?;
+            Ok(vec![out])
         }
+        Operation::Crop { pages: targets, margins } => {
+            let targets = expand(targets, &src)?;
+            let out = one("_cropped")?;
+            pages::crop(&src, *margins, &targets, out.0.path())?;
+            Ok(vec![out])
+        }
+        Operation::Split { chunk } => {
+            if *chunk == 0 {
+                return Err("每份頁數至少要 1".into());
+            }
+            let plan = pages::split_plan(pages::count(&src)?, *chunk);
+            if plan.len() < 2 {
+                return Err("這份文件的頁數不足以依此設定分割".into());
+            }
+            let mut outs: Outputs = Vec::with_capacity(plan.len());
+            for part in &plan {
+                let (first, last) = (part[0], part[part.len() - 1]);
+                let suffix = if first == last {
+                    format!("_p{first}")
+                } else {
+                    format!("_p{first}-{last}")
+                };
+                outs.push(one(&suffix)?);
+            }
+            let dests: Vec<&Path> = outs.iter().map(|(e, _)| e.path()).collect();
+            pages::split(&src, &plan, &dests)?;
+            Ok(outs)
+        }
+        Operation::ToJpeg { dpi } => {
+            let gs = gs.ok_or("找不到轉檔引擎（Ghostscript）")?;
+            let total = pages::count(&src)?;
+            let mut outs: Outputs = Vec::with_capacity(total);
+            for page in 1..=total as u32 {
+                let out = one(&format!("_p{page:03}"))?;
+                gs::render_page(gs, &src, page, *dpi, out.0.path())?;
+                outs.push(out);
+            }
+            Ok(outs)
+        }
+    }
+}
+
+/// 頁碼清單為空時代表整份文件。
+fn expand(targets: &[u32], src: &Path) -> Result<Vec<u32>, String> {
+    if targets.is_empty() {
+        Ok((1..=pages::count(src)? as u32).collect())
+    } else {
+        Ok(targets.to_vec())
     }
 }
 
@@ -244,8 +333,21 @@ mod tests {
         p.exists().then_some(p)
     }
 
-    fn tmp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("localpdf-cmd-{name}"))
+    /// 每個測試用自己的暫存根目錄，Ephemeral 才不會互相干擾。
+    fn eph_root() -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "localpdf-cmd-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn run(op: &Operation, src: &Path, root: &Path) -> Result<Outputs, String> {
+        execute(op, &[src.to_string_lossy().into()], gs::locate(None).as_deref(), root)
     }
 
     #[test]
@@ -255,12 +357,11 @@ mod tests {
             return;
         };
         let total = pages::count(&src).unwrap();
-        let out = tmp("remove.pdf");
-        let op = Operation::Remove { pages: vec![1, 2, 3] };
+        let root = eph_root();
+        let out = run(&Operation::Remove { pages: vec![1, 2, 3] }, &src, &root).unwrap();
 
-        execute(&op, &[src.to_string_lossy().into()], None, &out).unwrap();
-        assert_eq!(pages::count(&out).unwrap(), total - 3);
-        std::fs::remove_file(&out).ok();
+        assert_eq!(out.len(), 1);
+        assert_eq!(pages::count(out[0].0.path()).unwrap(), total - 3);
     }
 
     #[test]
@@ -268,19 +369,17 @@ mod tests {
         let Some(src) = corpus("c1_text.pdf") else { return };
         let total = pages::count(&src).unwrap() as u32;
         let op = Operation::Remove { pages: (1..=total).collect() };
-        let err = execute(&op, &[src.to_string_lossy().into()], None, &tmp("x.pdf")).unwrap_err();
+        let err = run(&op, &src, &eph_root()).unwrap_err();
         assert!(err.contains("不能移除所有頁面"), "訊息應說明原因：{err}");
     }
 
     #[test]
     fn rotate_with_no_pages_means_all_pages() {
         let Some(src) = corpus("c1_text.pdf") else { return };
-        let out = tmp("rotate-all.pdf");
-        let op = Operation::Rotate { pages: vec![], degrees: 90 };
+        let root = eph_root();
+        let out = run(&Operation::Rotate { pages: vec![], degrees: 90 }, &src, &root).unwrap();
 
-        execute(&op, &[src.to_string_lossy().into()], None, &out).unwrap();
-
-        let doc = lopdf::Document::load(&out).unwrap();
+        let doc = lopdf::Document::load(out[0].0.path()).unwrap();
         let rotated = doc
             .get_pages()
             .values()
@@ -293,7 +392,67 @@ mod tests {
             })
             .count();
         assert_eq!(rotated, doc.get_pages().len(), "留空應該旋轉每一頁");
-        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn split_produces_one_file_per_chunk() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        let total = pages::count(&src).unwrap();
+        let root = eph_root();
+        let out = run(&Operation::Split { chunk: 10 }, &src, &root).unwrap();
+
+        assert_eq!(out.len(), total.div_ceil(10));
+        assert_eq!(pages::count(out[0].0.path()).unwrap(), 10);
+        assert_eq!(out[0].1, "_p1-10", "檔名字尾要標出頁碼範圍");
+    }
+
+    #[test]
+    fn split_refuses_when_it_would_produce_one_file() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        let op = Operation::Split { chunk: 9999 };
+        let err = run(&op, &src, &eph_root()).unwrap_err();
+        assert!(err.contains("頁數不足"), "應說明為何不能分割：{err}");
+    }
+
+    #[test]
+    fn to_jpeg_produces_one_image_per_page() {
+        let Some(src) = corpus("c3_mixed.pdf") else { return };
+        if gs::locate(None).is_none() {
+            eprintln!("跳過：找不到 Ghostscript");
+            return;
+        }
+        let total = pages::count(&src).unwrap();
+        let root = eph_root();
+        let out = run(&Operation::ToJpeg { dpi: 72 }, &src, &root).unwrap();
+
+        assert_eq!(out.len(), total);
+        assert_eq!(out[0].1, "_p001");
+        // JPEG 的檔頭是 FF D8 FF——確認真的產出圖片而不是空檔或 PDF。
+        let head = std::fs::read(out[0].0.path()).unwrap();
+        assert_eq!(&head[..3], &[0xFF, 0xD8, 0xFF], "輸出應該是 JPEG");
+    }
+
+    #[test]
+    fn to_jpeg_rejects_absurd_dpi() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        if gs::locate(None).is_none() {
+            return;
+        }
+        assert!(run(&Operation::ToJpeg { dpi: 5000 }, &src, &eph_root()).is_err());
+    }
+
+    /// 一進多出時，來源大小只掛在第一筆結果上——否則清單加總會膨脹成好幾倍。
+    #[test]
+    fn multi_output_counts_source_size_once() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        let root = eph_root();
+        let outs = run(&Operation::Split { chunk: 10 }, &src, &root).unwrap();
+        let orig = std::fs::metadata(&src).unwrap().len();
+
+        let totals: Vec<u64> = (0..outs.len())
+            .map(|nth| if nth == 0 { orig } else { 0 })
+            .collect();
+        assert_eq!(totals.iter().sum::<u64>(), orig);
     }
 }
 

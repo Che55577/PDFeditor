@@ -79,7 +79,36 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
 }
 .field input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-.rotate-opts { display: grid; gap: 10px; }
+.rotate-opts,
+.crop-opts { display: grid; gap: 10px; }
+
+.margins {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.margins legend {
+  padding: 0 4px;
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+.margins label { display: flex; align-items: center; gap: 6px; }
+.margins span { font-size: 0.82rem; color: var(--dim); }
+.margins input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
 .angles {
   display: flex;
   flex-wrap: wrap;

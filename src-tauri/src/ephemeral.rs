@@ -101,6 +101,15 @@ impl Drop for Ephemeral {
     }
 }
 
+impl std::fmt::Debug for Ephemeral {
+    /// 刻意不印出路徑。暫存檔名不該只因為某處寫了 `dbg!` 或錯誤訊息就流進日誌。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ephemeral")
+            .field("armed", &self.armed)
+            .finish_non_exhaustive()
+    }
+}
+
 /// 產生亂數檔名用的 128 bit。不需要密碼學強度，只要不撞名、不可預測即可，
 /// 為此拉一個 rand crate 進來不划算。
 fn rand_u128() -> u128 {

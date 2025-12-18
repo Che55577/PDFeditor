@@ -158,6 +158,47 @@ pub fn compress(gs: &Path, input: &Path, output: &Path, level: Level) -> Result<
     }
 }
 
+/// 把單一頁面算成 JPEG。
+///
+/// 刻意一頁一次呼叫，而不是用 Ghostscript 的 `%03d` 樣板一次輸出整份。
+/// 樣板會把檔案寫到我們管不到的名字上，等於在暫存管理之外多開一條路徑；
+/// 一頁一檔則能讓每個位元組都落在受管理的暫存檔裡。代價是每頁多一次行程啟動。
+pub fn render_page(gs: &Path, input: &Path, page: u32, dpi: u32, out: &Path) -> Result<(), String> {
+    if !(20..=600).contains(&dpi) {
+        return Err("解析度請設在 20 到 600 dpi 之間".into());
+    }
+    let result = build_cmd(gs)
+        .args([
+            "-dSAFER",
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-sDEVICE=jpeg",
+            "-dJPEGQ=90",
+            // 依 CropBox 出圖，否則裁切過的頁面會把已裁掉的部分又畫回來。
+            "-dUseCropBox",
+        ])
+        .arg(format!("-r{dpi}"))
+        .arg(format!("-dFirstPage={page}"))
+        .arg(format!("-dLastPage={page}"))
+        .arg(format!("-sOutputFile={}", out.display()))
+        .arg(input)
+        .output()
+        .map_err(|e| format!("無法執行轉檔引擎：{e}"))?;
+
+    if !result.status.success() {
+        let err = String::from_utf8_lossy(&result.stderr);
+        return Err(format!(
+            "第 {page} 頁轉檔失敗：{}",
+            err.lines().last().unwrap_or("未知錯誤").trim()
+        ));
+    }
+    match std::fs::metadata(out) {
+        Ok(m) if m.len() > 0 => Ok(()),
+        _ => Err(format!("第 {page} 頁未產生輸出")),
+    }
+}
+
 fn build_cmd(gs: &Path) -> Command {
     let mut cmd = Command::new(gs);
     #[cfg(windows)]

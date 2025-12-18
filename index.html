@@ -21,6 +21,9 @@
         <button type="button" data-tool="extract">擷取頁面</button>
         <button type="button" data-tool="remove">移除頁面</button>
         <button type="button" data-tool="rotate">旋轉</button>
+        <button type="button" data-tool="crop">裁切</button>
+        <button type="button" data-tool="split">分割</button>
+        <button type="button" data-tool="tojpeg">轉成 JPG</button>
       </nav>
 
       <section id="drop" class="drop">
@@ -68,6 +71,29 @@
             <label><input type="radio" name="angle" value="270" /><span>逆時針 90°</span></label>
           </fieldset>
         </div>
+        <div class="crop-opts" data-for="crop">
+          <label class="field">
+            <span>哪些頁（留空代表全部）</span>
+            <input id="cropPages" type="text" placeholder="例如 1-3" />
+          </label>
+          <fieldset class="margins">
+            <legend>四邊各往內裁切（公釐）</legend>
+            <label><span>上</span><input id="cropTop" type="number" min="0" step="1" value="0" /></label>
+            <label><span>下</span><input id="cropBottom" type="number" min="0" step="1" value="0" /></label>
+            <label><span>左</span><input id="cropLeft" type="number" min="0" step="1" value="0" /></label>
+            <label><span>右</span><input id="cropRight" type="number" min="0" step="1" value="0" /></label>
+          </fieldset>
+        </div>
+
+        <label class="field" data-for="split">
+          <span>每份幾頁</span>
+          <input id="splitChunk" type="number" min="1" step="1" value="1" />
+        </label>
+
+        <label class="field" data-for="tojpeg">
+          <span>解析度（DPI，20–600）</span>
+          <input id="jpegDpi" type="number" min="20" max="600" step="10" value="150" />
+        </label>
       </div>
 
       <div class="actions">
