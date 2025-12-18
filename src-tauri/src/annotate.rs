@@ -45,9 +45,40 @@ pub enum Corner {
     TopLeft,
     TopCenter,
     TopRight,
+    Center,
     BottomLeft,
     BottomCenter,
     BottomRight,
+}
+
+impl Corner {
+    /// 依頁面範圍與內容尺寸算出左下角座標。
+    fn place(self, page: [f64; 4], w: f64, h: f64, margin: f64) -> (f64, f64) {
+        let [x0, y0, x1, y1] = page;
+        let x = match self {
+            Corner::TopLeft | Corner::BottomLeft => x0 + margin,
+            Corner::TopCenter | Corner::Center | Corner::BottomCenter => (x0 + x1 - w) / 2.0,
+            Corner::TopRight | Corner::BottomRight => x1 - margin - w,
+        };
+        let y = match self {
+            // 上緣要讓出內容高度，否則會頂到裁切線外
+            Corner::TopLeft | Corner::TopCenter | Corner::TopRight => y1 - margin - h,
+            Corner::Center => (y0 + y1 - h) / 2.0,
+            _ => y0 + margin,
+        };
+        (x, y)
+    }
+}
+
+/// 圖章的擺放方式。高度依圖片長寬比自動決定。
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+pub struct Placement {
+    pub corner: Corner,
+    /// 距離頁緣，單位 pt
+    pub margin: f64,
+    /// 圖章寬度，單位 pt
+    pub width: f64,
+    pub opacity: f64,
 }
 
 /// 斜向文字浮水印，置中於每一頁。
@@ -93,7 +124,7 @@ pub fn watermark(
             nsin = -sin,
             hex = prepared.hex,
         );
-        stamp(&mut doc, page_id, font_id, style.opacity, &body)?;
+        overlay(&mut doc, page_id, &[(b"Font", "Fwm", font_id)], style.opacity, &body)?;
     }
     save(&mut doc, output)
 }
@@ -135,19 +166,9 @@ pub fn page_numbers(
     let font_id = font.embed(&mut doc)?;
 
     for (page_id, prepared) in labels {
-        let [x0, y0, x1, y1] = page_box(&doc, page_id)?;
+        let page = page_box(&doc, page_id)?;
         let width = prepared.width_em * style.size;
-
-        let x = match corner {
-            Corner::TopLeft | Corner::BottomLeft => x0 + margin,
-            Corner::TopCenter | Corner::BottomCenter => (x0 + x1 - width) / 2.0,
-            Corner::TopRight | Corner::BottomRight => x1 - margin - width,
-        };
-        let y = match corner {
-            // 上緣要再往下讓出一個字高，否則文字會頂在裁切線外。
-            Corner::TopLeft | Corner::TopCenter | Corner::TopRight => y1 - margin - style.size,
-            _ => y0 + margin,
-        };
+        let (x, y) = corner.place(page, width, style.size, margin);
 
         let body = format!(
             "BT /Fwm {size} Tf {r:.4} {g:.4} {b:.4} rg 1 0 0 1 {x:.3} {y:.3} Tm <{hex}> Tj ET",
@@ -157,7 +178,53 @@ pub fn page_numbers(
             b = style.color[2],
             hex = prepared.hex,
         );
-        stamp(&mut doc, page_id, font_id, style.opacity, &body)?;
+        overlay(&mut doc, page_id, &[(b"Font", "Fwm", font_id)], style.opacity, &body)?;
+    }
+    save(&mut doc, output)
+}
+
+/// 在指定位置蓋上圖片：簽名檔、公司章、浮水印圖。
+///
+/// 帶透明背景的 PNG 會保留透明度（見 `images::embed` 的 SMask 處理）——
+/// 沒有它，蓋出來就是一個白方塊糊住文件。
+pub fn stamp_image(
+    input: &Path,
+    output: &Path,
+    image: &Path,
+    place: &Placement,
+    targets: &[u32],
+) -> Result<()> {
+    if !(1.0..=2000.0).contains(&place.width) {
+        return Err("圖章寬度請設在合理範圍內".into());
+    }
+    if place.margin < 0.0 {
+        return Err("邊界不能是負值".into());
+    }
+    if !(0.0..=1.0).contains(&place.opacity) {
+        return Err("透明度必須介於 0 與 1 之間".into());
+    }
+
+    let mut doc = load(input)?;
+    let img = crate::images::embed(&mut doc, image)?;
+    let height = place.width * img.height as f64 / img.width.max(1) as f64;
+
+    for page_id in resolve(&doc, targets)? {
+        let page = page_box(&doc, page_id)?;
+        let (x, y) = place.corner.place(page, place.width, height, place.margin);
+
+        // cm 把 1×1 單位方塊縮放成圖章尺寸並平移到定位點。
+        let body = format!(
+            "{w:.3} 0 0 {h:.3} {x:.3} {y:.3} cm /Imstamp Do",
+            w = place.width,
+            h = height,
+        );
+        overlay(
+            &mut doc,
+            page_id,
+            &[(b"XObject", "Imstamp", img.id)],
+            place.opacity,
+            &body,
+        )?;
     }
     save(&mut doc, output)
 }
@@ -197,10 +264,13 @@ fn page_box(doc: &Document, page_id: ObjectId) -> Result<[f64; 4]> {
 }
 
 /// 把一段繪圖指令疊到頁面最上層。
-fn stamp(
+///
+/// `extra` 是這段指令用到的資源，例如 `(b"Font", "Fwm", 字型物件)`
+/// 或 `(b"XObject", "Imstamp", 影像物件)`。
+fn overlay(
     doc: &mut Document,
     page_id: ObjectId,
-    font_id: ObjectId,
+    extra: &[(&[u8], &str, ObjectId)],
     opacity: f64,
     body: &str,
 ) -> Result<()> {
@@ -211,7 +281,9 @@ fn stamp(
     let gs_id = doc.add_object(gs);
 
     let mut resources = effective_resources(doc, page_id);
-    merge_resource(doc, &mut resources, b"Font", "Fwm", font_id);
+    for (category, key, id) in extra {
+        merge_resource(doc, &mut resources, category, key, *id);
+    }
     merge_resource(doc, &mut resources, b"ExtGState", "GSwm", gs_id);
 
     // 原內容可能留下不平衡的繪圖狀態，所以在最前面補一個 q、我們自己的內容前補 Q，
@@ -364,6 +436,80 @@ mod tests {
 
         assert!(watermark(&src, &tmp("x"), "   ", &style(), 0.0, &[]).is_err());
         assert!(page_numbers(&src, &tmp("x"), "", &style(), Corner::TopLeft, 1, 36.0, &[]).is_err());
+    }
+
+    /// 手寫一張帶透明背景的 PNG 當簽名檔。
+    fn sample_stamp(dir: &Path) -> PathBuf {
+        let (w, h) = (60u32, 30u32);
+        let mut raw = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                // 畫一條斜線，其餘透明——模擬簽名的筆畫
+                let on = (x as i32 - y as i32 * 2).abs() < 6;
+                raw.extend_from_slice(&[0, 0, 200, if on { 255 } else { 0 }]);
+            }
+        }
+        let path = dir.join("sign.png");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&raw).unwrap();
+        path
+    }
+
+    #[test]
+    fn stamp_places_image_and_keeps_original_content() {
+        let Some(src) = corpus() else {
+            eprintln!("跳過：需要語料");
+            return;
+        };
+        let dir = std::env::temp_dir().join("localpdf-stamp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sign = sample_stamp(&dir);
+        let out = dir.join("stamped.pdf");
+
+        let place = Placement {
+            corner: Corner::BottomRight,
+            margin: 36.0,
+            width: 120.0,
+            opacity: 1.0,
+        };
+        stamp_image(&src, &out, &sign, &place, &[1]).unwrap();
+
+        let before = Document::load(&src).unwrap();
+        let after = Document::load(&out).unwrap();
+        assert_eq!(after.get_pages().len(), before.get_pages().len(), "頁數不該變");
+
+        let page = after.get_pages()[&1];
+        let content = String::from_utf8_lossy(&after.get_page_content(page)).to_string();
+        assert!(content.contains("/Imstamp Do"), "應該有畫上圖章：{content:.200}");
+
+        let original = String::from_utf8_lossy(&before.get_page_content(before.get_pages()[&1])).to_string();
+        assert!(content.contains(original.trim()), "原內容必須完整保留");
+    }
+
+    #[test]
+    fn stamp_rejects_bad_placement() {
+        let Some(src) = corpus() else { return };
+        let dir = std::env::temp_dir().join("localpdf-stamp-bad");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sign = sample_stamp(&dir);
+        let ok = Placement { corner: Corner::Center, margin: 0.0, width: 100.0, opacity: 1.0 };
+
+        let mut bad = ok;
+        bad.opacity = 2.0;
+        assert!(stamp_image(&src, &dir.join("x.pdf"), &sign, &bad, &[]).is_err());
+
+        let mut bad = ok;
+        bad.margin = -1.0;
+        assert!(stamp_image(&src, &dir.join("x.pdf"), &sign, &bad, &[]).is_err());
+
+        let mut bad = ok;
+        bad.width = 0.0;
+        assert!(stamp_image(&src, &dir.join("x.pdf"), &sign, &bad, &[]).is_err());
     }
 
     #[test]

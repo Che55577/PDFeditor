@@ -102,6 +102,16 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
   height: 38px;
   cursor: pointer;
 }
+.picker { display: flex; align-items: center; gap: 10px; }
+.picked {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  color: var(--dim);
+}
+
 .field code {
   padding: 1px 4px;
   border-radius: 4px;

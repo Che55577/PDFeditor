@@ -17,7 +17,8 @@ type Tool =
   | "watermark"
   | "pagenumbers"
   | "officetopdf"
-  | "tomarkdown";
+  | "tomarkdown"
+  | "stamp";
 type Level = "extreme" | "recommended" | "low";
 
 interface FileInfo {
@@ -69,7 +70,11 @@ const LABEL: Record<Tool, string> = {
   pagenumbers: "加頁碼",
   officetopdf: "轉成 PDF",
   tomarkdown: "轉成 Markdown",
+  stamp: "蓋圖章",
 };
+
+/** 圖章的圖片檔另外選，不進批次清單。 */
+let stampImage: string | null = null;
 
 const OFFICE_EXTS = [
   "doc", "docx", "rtf", "odt", "txt",
@@ -79,7 +84,7 @@ const OFFICE_EXTS = [
 
 /** 每個工具吃什麼檔案。只有 JPG 轉 PDF 收圖片。 */
 const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
-  imagestopdf: { name: "JPEG 圖片", extensions: ["jpg", "jpeg"] },
+  imagestopdf: { name: "圖片", extensions: ["jpg", "jpeg", "png"] },
   compress: { name: "PDF", extensions: ["pdf"] },
   merge: { name: "PDF", extensions: ["pdf"] },
   extract: { name: "PDF", extensions: ["pdf"] },
@@ -93,6 +98,7 @@ const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
   pagenumbers: { name: "PDF", extensions: ["pdf"] },
   officetopdf: { name: "Office 文件", extensions: OFFICE_EXTS },
   tomarkdown: { name: "PDF", extensions: ["pdf"] },
+  stamp: { name: "PDF", extensions: ["pdf"] },
 };
 
 /** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
@@ -209,6 +215,29 @@ function buildOperation(): object {
       return { kind: "officeToPdf" };
     case "tomarkdown":
       return { kind: "toMarkdown" };
+    case "stamp": {
+      if (!stampImage) throw new Error("請先選擇圖章圖片");
+      const width = num("stampWidth");
+      const margin = num("stampMargin");
+      const opacity = num("stampOpacity");
+      if (!Number.isFinite(width) || width < 1) throw new Error("圖章寬度必須大於 0");
+      if (!Number.isFinite(margin) || margin < 0) throw new Error("邊界必須是 0 或正數");
+      if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+        throw new Error("透明度必須介於 0 與 1 之間");
+      }
+      const spec = $<HTMLInputElement>("stampPages").value.trim();
+      return {
+        kind: "stamp",
+        image: stampImage,
+        place: {
+          corner: $<HTMLSelectElement>("stampCorner").value,
+          margin: margin * MM_TO_PT,
+          width: width * MM_TO_PT,
+          opacity,
+        },
+        pages: spec ? parsePages(spec, minPages) : [],
+      };
+    }
     case "watermark": {
       const text = $<HTMLInputElement>("wmText").value.trim();
       if (!text) throw new Error("請輸入浮水印文字");
@@ -479,6 +508,17 @@ toolsEl.onclick = (e) => {
       ? `已移除 ${before - files.length} 個檔案：「${LABEL[tool]}」只接受 ${ACCEPTS[tool].name}`
       : "",
   );
+  render();
+};
+
+$<HTMLButtonElement>("stampPick").onclick = async () => {
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: "圖片", extensions: ["png", "jpg", "jpeg"] }],
+  });
+  if (typeof picked !== "string") return;
+  stampImage = picked;
+  $<HTMLElement>("stampName").textContent = picked.split(/[\\/]/).pop() ?? picked;
   render();
 };
 

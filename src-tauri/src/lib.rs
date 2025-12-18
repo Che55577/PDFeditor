@@ -70,6 +70,12 @@ enum Operation {
     OfficeToPdf,
     /// 抽出文字並整理成 Markdown
     ToMarkdown,
+    /// 蓋圖章（簽名檔、公司章）。image 是另外選的圖片檔，不在批次輸入裡。
+    Stamp {
+        image: String,
+        place: annotate::Placement,
+        pages: Vec<u32>,
+    },
 }
 
 impl Operation {
@@ -380,7 +386,7 @@ fn execute(op: &Operation, batch: &[String], tools: Tools, root: &Path) -> Resul
             let owned: Vec<PathBuf> = batch.iter().map(PathBuf::from).collect();
             let refs: Vec<&Path> = owned.iter().map(|p| p.as_path()).collect();
             let out = one("_images")?;
-            images::jpegs_to_pdf(&refs, *margin, out.0.path())?;
+            images::images_to_pdf(&refs, *margin, out.0.path())?;
             Ok(vec![out])
         }
         Operation::Repair => {
@@ -406,6 +412,11 @@ fn execute(op: &Operation, batch: &[String], tools: Tools, root: &Path) -> Resul
                 *margin,
                 targets,
             )?;
+            Ok(vec![out])
+        }
+        Operation::Stamp { image, place, pages: targets } => {
+            let out = one("_stamped")?;
+            annotate::stamp_image(&src, out.0.path(), Path::new(image), place, targets)?;
             Ok(vec![out])
         }
         Operation::ToMarkdown => {
@@ -607,6 +618,41 @@ mod tests {
     ///
     /// markdown.rs 的單元測試用的是固定樣本，證明不了 Ghostscript 那一段；
     /// 中文編碼是這條路徑最容易壞的地方，所以這裡要用真檔案跑一次。
+    /// 圖章要能蓋在每一頁，且不改變頁數。
+    #[test]
+    fn stamp_applies_to_all_pages() {
+        let Some(src) = corpus("c1_text.pdf") else { return };
+        let root = eph_root();
+        let sign = root.join("seal.png");
+        {
+            let (w, h) = (30u32, 30u32);
+            let file = std::fs::File::create(&sign).unwrap();
+            let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header()
+                .unwrap()
+                .write_image_data(&vec![200u8; (w * h * 4) as usize])
+                .unwrap();
+        }
+        let op = Operation::Stamp {
+            image: sign.to_string_lossy().into(),
+            place: annotate::Placement {
+                corner: annotate::Corner::BottomRight,
+                margin: 20.0,
+                width: 80.0,
+                opacity: 0.9,
+            },
+            pages: vec![],
+        };
+        let out = run(&op, &src, &root).unwrap();
+        assert_eq!(
+            pages::count(out[0].0.path()).unwrap(),
+            pages::count(&src).unwrap(),
+            "蓋章不該改變頁數"
+        );
+    }
+
     #[test]
     fn markdown_extracts_real_chinese_text() {
         let Some(src) = corpus("c1_text.pdf") else { return };
