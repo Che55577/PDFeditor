@@ -6,6 +6,7 @@ mod images;
 mod markdown;
 mod office;
 mod pages;
+mod pyext;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,8 @@ struct AppState {
     gs: Option<PathBuf>,
     /// LibreOffice。這個不隨程式打包（350 MB 太重），偵測系統既有安裝。
     office: Option<PathBuf>,
+    /// Python 擴充包。216 MB，做成獨立安裝檔，沒裝屬正常情況。
+    pyext: Option<PathBuf>,
     /// 所有落地的暫存檔都只會出現在這個目錄下。
     eph_root: PathBuf,
     /// 已完成、等待使用者儲存的結果。從這裡移除即代表抹除。
@@ -68,6 +71,8 @@ enum Operation {
     },
     /// Word / Excel / PowerPoint 轉 PDF
     OfficeToPdf,
+    /// PDF 轉 Word，需要 Python 擴充包
+    PdfToWord,
     /// 抽出文字並整理成 Markdown
     ToMarkdown,
     /// 蓋圖章（簽名檔、公司章）。image 是另外選的圖片檔，不在批次輸入裡。
@@ -99,10 +104,15 @@ impl Operation {
         matches!(self, Operation::OfficeToPdf)
     }
 
+    fn needs_pyext(&self) -> bool {
+        matches!(self, Operation::PdfToWord)
+    }
+
     fn extension(&self) -> &'static str {
         match self {
             Operation::ToImage { format, .. } => format.extension(),
             Operation::ToMarkdown => "md",
+            Operation::PdfToWord => "docx",
             _ => "pdf",
         }
     }
@@ -126,7 +136,7 @@ impl Operation {
             Operation::Stamp { .. } => 8,
             Operation::Compress { .. } => 9,
             Operation::Split { .. } => 10,
-            Operation::ToImage { .. } | Operation::ToMarkdown => 11,
+            Operation::ToImage { .. } | Operation::ToMarkdown | Operation::PdfToWord => 11,
         }
     }
 
@@ -148,12 +158,16 @@ impl Operation {
             Operation::Stamp { .. } => "圖章",
             Operation::OfficeToPdf => "Office 轉 PDF",
             Operation::ToMarkdown => "轉成 Markdown",
+            Operation::PdfToWord => "PDF 轉 Word",
         }
     }
 
     /// 產出非 PDF，後面不能再接任何步驟。
     fn is_terminal(&self) -> bool {
-        matches!(self, Operation::ToImage { .. } | Operation::ToMarkdown)
+        matches!(
+            self,
+            Operation::ToImage { .. } | Operation::ToMarkdown | Operation::PdfToWord
+        )
     }
 
     /// 吃的不是 PDF，只能放在最前面。
@@ -224,6 +238,8 @@ struct Engines {
     ghostscript: Option<String>,
     /// 需使用者自行安裝，沒有屬正常情況。
     libreoffice: Option<String>,
+    /// 獨立的擴充包，沒有屬正常情況。
+    pyext: Option<String>,
 }
 
 #[tauri::command]
@@ -231,6 +247,7 @@ fn engine_status(state: State<'_, AppState>) -> Engines {
     Engines {
         ghostscript: state.gs.as_ref().and_then(|p| gs::version(p).ok()),
         libreoffice: state.office.as_ref().and_then(|p| office::version(p).ok()),
+        pyext: state.pyext.as_ref().and_then(|p| pyext::version(p).ok()),
     }
 }
 
@@ -428,9 +445,16 @@ async fn run_pipeline(
         return Err("找不到 LibreOffice。Office 轉檔需要先安裝它，安裝後請重新啟動本程式".into());
     }
 
+    if ops.iter().any(Operation::needs_pyext) && state.pyext.is_none() {
+        return Err(
+            "PDF 轉 Word 需要另外安裝擴充包（約 100 MB）。安裝後請重新啟動本程式".into(),
+        );
+    }
+
     let root = state.eph_root.clone();
     let gs = state.gs.clone();
     let office = state.office.clone();
+    let pyext = state.pyext.clone();
     let source_name = file_name(&PathBuf::from(&paths[0]), &paths[0]);
     let orig_bytes: u64 = paths
         .iter()
@@ -464,13 +488,18 @@ async fn run_pipeline(
                 batch.iter().map(|i| i.path.to_string_lossy().to_string()).collect();
             let carried = batch[0].suffix.clone();
 
-            let (op2, gs, office, root) = (op.clone(), gs.clone(), office.clone(), root.clone());
+            let (op2, gs, office, pyext, root) =
+                (op.clone(), gs.clone(), office.clone(), pyext.clone(), root.clone());
             let outcome = tauri::async_runtime::spawn_blocking(move || {
                 // 失敗時這一階段已建立的 Ephemeral 全部在此被 Drop 抹除。
                 execute(
                     &op2,
                     &batch_paths,
-                    Tools { gs: gs.as_deref(), office: office.as_deref() },
+                    Tools {
+                        gs: gs.as_deref(),
+                        office: office.as_deref(),
+                        pyext: pyext.as_deref(),
+                    },
                     &root,
                 )
             })
@@ -545,6 +574,7 @@ type Outputs = Vec<(Ephemeral, String)>;
 struct Tools<'a> {
     gs: Option<&'a Path>,
     office: Option<&'a Path>,
+    pyext: Option<&'a Path>,
 }
 
 /// 實際執行一次操作。跑在 blocking pool 上。
@@ -677,6 +707,12 @@ fn execute(op: &Operation, batch: &[String], tools: Tools, root: &Path) -> Resul
             markdown::to_markdown(gs, &src, out.0.path())?;
             Ok(vec![out])
         }
+        Operation::PdfToWord => {
+            let py = tools.pyext.ok_or("需要安裝擴充包才能使用 PDF 轉 Word")?;
+            let out = one("")?;
+            pyext::pdf_to_docx(py, &src, out.0.path())?;
+            Ok(vec![out])
+        }
         Operation::OfficeToPdf => {
             let soffice = tools.office.ok_or("找不到 LibreOffice")?;
             let out = one("")?;
@@ -765,10 +801,11 @@ mod tests {
     fn run(op: &Operation, src: &Path, root: &Path) -> Result<Outputs, String> {
         let gs = gs::locate(None);
         let office = office::locate();
+        let py = pyext::locate(None);
         execute(
             op,
             &[src.to_string_lossy().into()],
-            Tools { gs: gs.as_deref(), office: office.as_deref() },
+            Tools { gs: gs.as_deref(), office: office.as_deref(), pyext: py.as_deref() },
             root,
         )
     }
@@ -946,7 +983,7 @@ mod tests {
             return;
         }
         let root = eph_root();
-        let tools = Tools { gs: None, office: None };
+        let tools = Tools { gs: None, office: None, pyext: None };
 
         // 先擷取 4 頁
         let picked = execute(
@@ -1085,6 +1122,7 @@ pub fn run() {
             app.manage(AppState {
                 gs,
                 office: office::locate(),
+                pyext: pyext::locate(resource_dir.as_deref()),
                 eph_root,
                 jobs: Mutex::new(HashMap::new()),
             });

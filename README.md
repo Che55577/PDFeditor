@@ -6,9 +6,34 @@
 **轉成圖片**（JPG／PNG）、**圖片轉 PDF**、**修復**、**浮水印**、**頁碼**、**圖章**、
 **Office 轉 PDF**、**轉成 Markdown**、**註記**（互動式編輯器）。
 
-不做 **PDF 轉 Word/Excel/PowerPoint**——實測與決策理由見 [`docs/pdf-to-office.md`](docs/pdf-to-office.md)，
-簡短版：LibreOffice 產出的是每個視覺行一個浮動文字方塊，不能編輯；可用的方案要背 100 MB 的
-Python 執行環境，規劃成獨立擴充包。
+**PDF 轉 Word** 需要另外安裝擴充包（見下節）。不做 PDF 轉 PowerPoint——沒有開源方案做得好。
+
+### 想改 PDF 的內文？
+
+**改不了。** PDF 沒有段落的概念，內容串流裡是帶絕對座標的字元串；改一個字要重新量測、
+重新定位整行、可能重新斷行——那些資訊在產生 PDF 的當下就已經遺失。編輯器提供的是
+**疊加式註記**，不是改動原文。
+
+實際可行的路只有一條：**PDF 轉 Word → 在 Word 裡編輯 → 用「Office 轉 PDF」轉回來**。
+兩端本專案都有，但中間的編輯要在 Word（或 LibreOffice Writer）裡做。
+
+### Python 擴充包
+
+PDF 轉 Word 只有 Python 生態有堪用的實作。實測比較見
+[`docs/pdf-to-office.md`](docs/pdf-to-office.md)——LibreOffice 產出的是每個視覺行一個
+浮動文字方塊（改一個字整段版面就散），pdf2docx 產出真段落、零文字方塊。
+
+代價是 216 MB 的 Python 執行期，所以做成獨立擴充包，主安裝檔維持 25 MB。建立方式：
+
+```
+python scripts/build-pyext.py
+```
+
+它會下載可嵌入版 Python、裝好 pdf2docx，並把用不到的東西清掉（完整的 opencv 換成
+headless 版省 70 MB、移除只用於影片的 ffmpeg 編解碼器省 29 MB、裝完的 pip 與 setuptools
+再省 8 MB）。
+
+擴充包是**一次性下載安裝**，不是執行期連網取件——「處理過程不連網」的宣稱不受影響。
 
 ## 為什麼是這個順序
 

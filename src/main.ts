@@ -9,7 +9,7 @@ import { extractLines } from "./mupdf-text";
 type Tool =
   | "compress" | "merge" | "extract" | "remove" | "rotate" | "crop" | "split"
   | "toimage" | "imagestopdf" | "repair" | "watermark" | "pagenumbers"
-  | "stamp" | "officetopdf" | "tomarkdown" | "annotate";
+  | "stamp" | "officetopdf" | "tomarkdown" | "pdftoword" | "annotate";
 
 interface FileInfo {
   path: string;
@@ -71,6 +71,7 @@ const TOOLS: ToolSpec[] = [
     accepts: { name: "圖片", extensions: ["jpg", "jpeg", "png"] } },
   { id: "toimage", label: "轉成圖片", hint: "每頁一張 JPG / PNG", group: "轉換", order: 11, terminal: true },
   { id: "tomarkdown", label: "轉成 Markdown", hint: "抽出文字與結構", group: "轉換", order: 11, terminal: true },
+  { id: "pdftoword", label: "PDF 轉 Word", hint: "需要擴充包", group: "轉換", order: 11, terminal: true },
 
   { id: "watermark", label: "浮水印", hint: "斜向文字", group: "編輯", order: 6 },
   { id: "pagenumbers", label: "頁碼", hint: "自動編號", group: "編輯", order: 7 },
@@ -485,6 +486,8 @@ function operationFor(id: Tool, minPages: number): object {
       return { kind: "officeToPdf" };
     case "tomarkdown":
       return { kind: "toMarkdown" };
+    case "pdftoword":
+      return { kind: "pdfToWord" };
     case "annotate":
       throw new Error("註記是互動式的，不走批次流程");
   }
@@ -576,6 +579,7 @@ function saveFilters(name: string) {
     jpg: { name: "JPEG 圖片", extensions: ["jpg"] },
     png: { name: "PNG 圖片", extensions: ["png"] },
     md: { name: "Markdown", extensions: ["md"] },
+    docx: { name: "Word 文件", extensions: ["docx"] },
   };
   return [known[ext] ?? PDF_ONLY];
 }
@@ -1066,14 +1070,16 @@ async function loadFonts() {
 interface Engines {
   ghostscript: string | null;
   libreoffice: string | null;
+  pyext: string | null;
 }
 
 async function showEngines() {
   const e = await invoke<Engines>("engine_status");
   const parts = [
     e.ghostscript ? `Ghostscript ${e.ghostscript}` : "Ghostscript 缺失（壓縮／轉圖／修復無法使用）",
-    // LibreOffice 不隨程式打包，沒有是正常情況，不該顯示成錯誤。
-    e.libreoffice ?? "未偵測到 LibreOffice（Office 轉檔無法使用）",
+    // 後兩者不隨程式打包，沒有是正常情況，不該顯示成錯誤。
+    e.libreoffice ?? "未偵測到 LibreOffice（Office 轉 PDF 無法使用）",
+    e.pyext ?? "未安裝擴充包（PDF 轉 Word 無法使用）",
   ];
   engineEl.textContent = parts.join("　·　");
   engineEl.className = e.ghostscript ? "engine ok" : "engine bad";

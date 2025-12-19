@@ -29,6 +29,10 @@ vendor/ghostscript/
 # MuPDF 的執行期檔案（約 10MB），由 npm run sync:mupdf 從 node_modules 複製
 public/mupdf/
 
+# Python 擴充包（約 216MB），由 python scripts/build-pyext.py 建立
+vendor/pyext/
+vendor/_cache/
+
 # 測試語料與中間產物皆可重新產生；results.csv 與 legibility.png 是量測結論，要進版控
 bench/corpus/
 bench/_work/

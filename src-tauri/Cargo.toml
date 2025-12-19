@@ -37,3 +37,6 @@ lto = true
 codegen-units = 1
 strip = true
 
+[dev-dependencies]
+zip = "8.6.0"
+
