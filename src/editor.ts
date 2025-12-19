@@ -46,6 +46,19 @@ export interface PageInfo {
 /** MuPDF 內建的中文字型後備名稱。標準 14 種字型沒有中文。 */
 const CJK_FONT = "Song";
 
+/**
+ * 套用塗黑時的處理方式。用數值常數而不是從模組取，避免相依於它們掛在哪個類別上。
+ * 對應 MuPDF 的 REDACT_* 常數。
+ */
+const REDACT = {
+  /** 影像：把覆蓋到的像素移除 */
+  IMAGE_REMOVE: 1,
+  /** 線條圖形：只要被碰到就移除 */
+  LINE_ART_REMOVE_IF_TOUCHED: 2,
+  /** 文字：真的從內容串流移除 */
+  TEXT_REMOVE: 0,
+} as const;
+
 export class Editor {
   #mupdf: MuPdf;
   #doc: any;
@@ -56,6 +69,8 @@ export class Editor {
   #scale = 1.5;
   /** 有沒有改過還沒存檔 */
   #dirty = false;
+  /** 已標記但尚未套用的塗黑區域數量。大於 0 時存檔必須完整重寫。 */
+  #redactions = 0;
 
   private constructor(mupdf: MuPdf, doc: any) {
     this.#mupdf = mupdf;
@@ -167,6 +182,34 @@ export class Editor {
     this.#dirty = true;
   }
 
+  /**
+   * 標記一塊要塗黑的區域。**實際移除在存檔時才執行**，在那之前只是一個標記，
+   * 可以用「移除上一個」取消。
+   *
+   * 這和用黑色方塊蓋住是完全不同的兩件事：蓋住只是畫一層東西在上面，底下的文字
+   * 仍然完整留在檔案裡；塗黑會從內容串流真的刪掉。
+   */
+  markRedaction(from: CanvasPoint, to: CanvasPoint): void {
+    const [ax, ay] = this.toPage(from);
+    const [bx, by] = this.toPage(to);
+    const rect = [
+      Math.min(ax, bx), Math.min(ay, by),
+      Math.max(ax, bx), Math.max(ay, by),
+    ];
+    if (rect[2] - rect[0] < 2 || rect[3] - rect[1] < 2) {
+      throw new Error("塗黑範圍太小，請拖出一塊區域");
+    }
+    const annot = this.#page.createAnnotation("Redact");
+    annot.setRect(rect);
+    annot.update();
+    this.#redactions++;
+    this.#dirty = true;
+  }
+
+  get redactionCount(): number {
+    return this.#redactions;
+  }
+
   /** 目前頁面的註記數量。 */
   annotationCount(): number {
     return this.#page ? this.#page.getAnnotations().length : 0;
@@ -177,6 +220,7 @@ export class Editor {
     const annots = this.#page?.getAnnotations() ?? [];
     const last = annots[annots.length - 1];
     if (!last) return false;
+    if (last.getType?.() === "Redact" && this.#redactions > 0) this.#redactions--;
     this.#page.deleteAnnotation(last);
     this.#dirty = true;
     return true;
@@ -185,16 +229,32 @@ export class Editor {
   /**
    * 存成 PDF 位元組。
    *
-   * 用增量儲存：新物件附加在原始檔案之後，**原始位元組完整保留**，正好符合
-   * 「疊加不動原內容」的原則。
+   * 沒有塗黑標記時用**增量儲存**：新物件附加在原始檔案之後，原始位元組完整保留，
+   * 正好符合「疊加不動原內容」的原則。
    *
-   * ⚠️ 但這也代表**被註記蓋住的內容仍然留在檔案裡**。拿白色方塊蓋住敏感資料
-   * 再存檔是不安全的——那需要真正的塗黑（applyRedaction）並完整重寫檔案。
-   * 這條規則不能只寫在文件裡，任何未來加入的遮蔽功能都不可以走這個函式。
+   * ⚠️ 有塗黑標記時**絕對不能**走增量儲存——增量會把原始位元組留在檔案尾端之前，
+   * 被塗掉的文字用抽取工具一撈就回來了，等於沒塗。所以先套用塗黑，再完整重寫整份檔案。
+   *
+   * 這條規則不能只寫在文件裡：任何未來加入的遮蔽功能都必須走這條路徑，
+   * 不可以自己呼叫 saveToBuffer("incremental")。
    */
   save(): Uint8Array {
-    const buf = this.#doc.saveToBuffer("incremental");
-    const bytes = buf.asUint8Array() as Uint8Array;
+    let mode = "incremental";
+    if (this.#redactions > 0) {
+      for (let i = 0; i < this.pageCount; i++) {
+        const page = this.#doc.loadPage(i);
+        page.applyRedactions(
+          true, // 在被塗掉的位置畫上黑色方塊，讓人看得出這裡被處理過
+          REDACT.IMAGE_REMOVE,
+          REDACT.LINE_ART_REMOVE_IF_TOUCHED,
+          REDACT.TEXT_REMOVE,
+        );
+      }
+      this.#redactions = 0;
+      // 完整重寫，原始位元組不會留下
+      mode = "compress";
+    }
+    const bytes = this.#doc.saveToBuffer(mode).asUint8Array() as Uint8Array;
     this.#dirty = false;
     return bytes;
   }

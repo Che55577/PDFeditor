@@ -12,7 +12,6 @@
       <header>
         <h1>LocalPDF</h1>
         <p class="sub">檔案不離開這台電腦。處理結果在你存檔或關閉視窗後立即從暫存區抹除。</p>
-        <p id="engine" class="engine"></p>
       </header>
 
       <section id="drop" class="drop">
@@ -28,10 +27,14 @@
 
       <ul id="files" class="filelist"></ul>
 
-      <section class="picker-block">
-        <h2 class="section-title">選擇功能<span class="section-note">可以複選，會依合理順序依序處理</span></h2>
-        <div id="tools" class="tool-grid"></div>
-      </section>
+      <details id="toolbox" class="toolbox" open>
+        <summary>
+          <span class="summary-title">選擇功能</span>
+          <span id="chips" class="chips"><span class="chips-empty">尚未選擇</span></span>
+        </summary>
+        <input id="toolFilter" class="toolfilter" type="search" placeholder="搜尋功能，例如「壓縮」或「頁」" />
+        <div id="tools" class="tool-groups"></div>
+      </details>
 
       <div id="panels" class="panels">
         <fieldset class="levels" data-for="compress">
@@ -208,12 +211,6 @@
         </p>
       </div>
 
-      <div class="actions">
-        <button id="run" type="button" disabled>執行</button>
-        <button id="saveAll" type="button" class="ghost" hidden>全部儲存到資料夾…</button>
-        <button id="clear" type="button" class="ghost" hidden>全部清除</button>
-      </div>
-
       <p id="status" class="status" role="status"></p>
       <ul id="list" class="list"></ul>
 
@@ -222,6 +219,7 @@
           <div class="modes">
             <button id="edModeText" type="button" class="mode active">✏️ 文字</button>
             <button id="edModeInk" type="button" class="mode">🖊️ 手繪</button>
+            <button id="edModeRedact" type="button" class="mode danger">⬛ 塗黑</button>
           </div>
           <span class="sep"></span>
           <button id="edPrev" type="button" class="ghost tiny">◀</button>
@@ -252,12 +250,28 @@
         </div>
 
         <p class="hint">
-          這是<strong>疊加式註記</strong>，改不了文件裡既有的文字——PDF 沒有段落的概念，
+          <strong>文字與手繪是疊加式註記</strong>，改不了文件裡既有的文字——PDF 沒有段落的概念，
           原有文字的位置在產生檔案時就已經固定。存檔採增量寫入，原始內容一個位元組都不動。
-          也因此，<strong>用色塊蓋住敏感資料並不安全</strong>，被蓋住的內容仍然留在檔案裡。
+          <br />
+          <strong>要遮蔽敏感資料請用「塗黑」，不要用手繪或圖章畫黑框。</strong>
+          畫上去的東西只是蓋在上面，底下的文字仍然完整留在檔案裡，用文字抽取工具一撈就出來；
+          塗黑會從內容串流真的刪除，並在存檔時完整重寫整份檔案。
         </p>
       </section>
+
+      <footer class="foot">
+        <p id="engine" class="engine"></p>
+      </footer>
     </main>
+
+    <div class="actionbar">
+      <div class="actionbar-inner">
+        <span id="plan" class="plan">先加入檔案並勾選功能</span>
+        <button id="clear" type="button" class="ghost" hidden>清除</button>
+        <button id="saveAll" type="button" class="ghost" hidden>全部儲存…</button>
+        <button id="run" type="button" disabled>執行</button>
+      </div>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

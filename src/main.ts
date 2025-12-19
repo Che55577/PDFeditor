@@ -27,10 +27,14 @@ interface JobResult {
   error: string | null;
 }
 
+type Group = "整理" | "最佳化" | "轉換" | "編輯";
+
 interface ToolSpec {
   id: Tool;
   label: string;
   hint: string;
+  /** 依用途分組，讓 16 個功能不要一次全攤在眼前 */
+  group: Group;
   /** 後端的排序位置，UI 依此排列設定面板，讓畫面順序與實際執行順序一致 */
   order: number;
   /** 這個工具吃什麼副檔名；未指定代表 PDF */
@@ -41,32 +45,37 @@ interface ToolSpec {
   terminal?: boolean;
 }
 
+const GROUPS: Group[] = ["整理", "最佳化", "轉換", "編輯"];
+
 const OFFICE_EXTS = [
   "doc", "docx", "rtf", "odt", "txt",
   "xls", "xlsx", "ods", "csv",
   "ppt", "pptx", "odp",
 ];
 
-/** 順序刻意與 Rust 的 Operation::order 一致。 */
+/** `order` 刻意與 Rust 的 `Operation::order` 一致。 */
 const TOOLS: ToolSpec[] = [
-  { id: "officetopdf", label: "Office 轉 PDF", hint: "Word / Excel / PPT", order: 0,
+  { id: "merge", label: "合併", hint: "多份併成一份", group: "整理", order: 2 },
+  { id: "extract", label: "擷取頁面", hint: "只保留指定頁", group: "整理", order: 3 },
+  { id: "remove", label: "移除頁面", hint: "刪掉指定頁", group: "整理", order: 3 },
+  { id: "rotate", label: "旋轉", hint: "90 / 180 / 270 度", group: "整理", order: 4 },
+  { id: "crop", label: "裁切", hint: "縮減頁面邊界", group: "整理", order: 5 },
+  { id: "split", label: "分割", hint: "每 N 頁一個檔", group: "整理", order: 10 },
+
+  { id: "compress", label: "壓縮", hint: "縮小檔案大小", group: "最佳化", order: 9 },
+  { id: "repair", label: "修復", hint: "重建損毀的檔案", group: "最佳化", order: 1 },
+
+  { id: "officetopdf", label: "Office 轉 PDF", hint: "Word / Excel / PPT", group: "轉換", order: 0,
     accepts: { name: "Office 文件", extensions: OFFICE_EXTS } },
-  { id: "imagestopdf", label: "圖片轉 PDF", hint: "JPG / PNG 併成一份", order: 0,
+  { id: "imagestopdf", label: "圖片轉 PDF", hint: "JPG / PNG 併成一份", group: "轉換", order: 0,
     accepts: { name: "圖片", extensions: ["jpg", "jpeg", "png"] } },
-  { id: "repair", label: "修復", hint: "重建損毀的檔案", order: 1 },
-  { id: "merge", label: "合併", hint: "多份併成一份", order: 2 },
-  { id: "extract", label: "擷取頁面", hint: "只保留指定頁", order: 3 },
-  { id: "remove", label: "移除頁面", hint: "刪掉指定頁", order: 3 },
-  { id: "rotate", label: "旋轉", hint: "90 / 180 / 270 度", order: 4 },
-  { id: "crop", label: "裁切", hint: "縮減頁面邊界", order: 5 },
-  { id: "watermark", label: "浮水印", hint: "斜向文字", order: 6 },
-  { id: "pagenumbers", label: "頁碼", hint: "自動編號", order: 7 },
-  { id: "stamp", label: "圖章", hint: "簽名檔、公司章", order: 8 },
-  { id: "compress", label: "壓縮", hint: "縮小檔案大小", order: 9 },
-  { id: "split", label: "分割", hint: "每 N 頁一個檔", order: 10 },
-  { id: "toimage", label: "轉成圖片", hint: "每頁一張 JPG / PNG", order: 11, terminal: true },
-  { id: "tomarkdown", label: "轉成 Markdown", hint: "抽出文字與結構", order: 11, terminal: true },
-  { id: "annotate", label: "註記", hint: "互動式編輯器", order: 99, exclusive: true },
+  { id: "toimage", label: "轉成圖片", hint: "每頁一張 JPG / PNG", group: "轉換", order: 11, terminal: true },
+  { id: "tomarkdown", label: "轉成 Markdown", hint: "抽出文字與結構", group: "轉換", order: 11, terminal: true },
+
+  { id: "watermark", label: "浮水印", hint: "斜向文字", group: "編輯", order: 6 },
+  { id: "pagenumbers", label: "頁碼", hint: "自動編號", group: "編輯", order: 7 },
+  { id: "stamp", label: "圖章", hint: "簽名檔、公司章", group: "編輯", order: 8 },
+  { id: "annotate", label: "註記", hint: "互動式編輯器", group: "編輯", order: 99, exclusive: true },
 ];
 
 const spec = (id: Tool) => TOOLS.find((t) => t.id === id)!;
@@ -122,12 +131,28 @@ const orderedSelection = (): ToolSpec[] =>
 
 // ---- 檔案清單 ----
 
+/** 路徑 → 縮圖的 blob URL。算過就留著，換工具重畫清單時不必再算一次。 */
+const thumbs = new Map<string, string>();
+
+/** 背景產生縮圖。失敗就算了——沒有縮圖只是少了預覽，不該打斷任何事。 */
+async function loadThumb(path: string) {
+  if (thumbs.has(path) || !path.toLowerCase().endsWith(".pdf")) return;
+  try {
+    const buf = await invoke<ArrayBuffer>("thumbnail", { path });
+    thumbs.set(path, URL.createObjectURL(new Blob([buf], { type: "image/jpeg" })));
+    render();
+  } catch {
+    /* 沒有縮圖不影響功能 */
+  }
+}
+
 async function addFiles(paths: string[]) {
   const keep = paths.filter(accepted);
   const skipped = paths.length - keep.length;
   const fresh = keep.filter((p) => !files.some((f) => f.path === p));
   if (fresh.length) {
     files = [...files, ...(await invoke<FileInfo[]>("inspect", { paths: fresh }))];
+    for (const p of fresh) void loadThumb(p);
   }
   render();
   if (skipped > 0) {
@@ -150,6 +175,17 @@ function renderFiles() {
   files.forEach((f, i) => {
     const li = document.createElement("li");
     li.className = f.error ? "filecard bad" : "filecard";
+
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const url = thumbs.get(f.path);
+    if (url) {
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = "";
+      thumb.append(img);
+    }
+    li.append(thumb);
 
     const info = document.createElement("div");
     info.className = "fileinfo";
@@ -194,26 +230,54 @@ function renderFiles() {
 
 function buildToolCards() {
   toolsEl.innerHTML = "";
-  for (const t of TOOLS) {
-    const label = document.createElement("label");
-    label.className = "toolcard";
-    label.dataset.tool = t.id;
+  for (const g of GROUPS) {
+    const section = document.createElement("section");
+    section.className = "toolgroup";
+    section.dataset.group = g;
 
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = selected.has(t.id);
-    box.onchange = () => toggle(t.id, box.checked);
+    const title = document.createElement("h3");
+    title.textContent = g;
+    const grid = document.createElement("div");
+    grid.className = "tool-grid";
 
-    const text = document.createElement("span");
-    text.className = "tooltext";
-    const name = document.createElement("strong");
-    name.textContent = t.label;
-    const hint = document.createElement("em");
-    hint.textContent = t.hint;
-    text.append(name, hint);
+    for (const t of TOOLS.filter((x) => x.group === g)) {
+      const label = document.createElement("label");
+      label.className = "toolcard";
+      label.dataset.tool = t.id;
+      label.dataset.search = `${t.label} ${t.hint} ${t.id}`;
 
-    label.append(box, text);
-    toolsEl.append(label);
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = selected.has(t.id);
+      box.onchange = () => toggle(t.id, box.checked);
+
+      const text = document.createElement("span");
+      text.className = "tooltext";
+      const name = document.createElement("strong");
+      name.textContent = t.label;
+      const hint = document.createElement("em");
+      hint.textContent = t.hint;
+      text.append(name, hint);
+
+      label.append(box, text);
+      grid.append(label);
+    }
+    section.append(title, grid);
+    toolsEl.append(section);
+  }
+}
+
+/** 依關鍵字篩選功能卡片；整組都沒東西時連標題一起收起來。 */
+function filterTools(query: string) {
+  const q = query.trim().toLowerCase();
+  for (const section of toolsEl.querySelectorAll<HTMLElement>(".toolgroup")) {
+    let visible = 0;
+    for (const card of section.querySelectorAll<HTMLElement>(".toolcard")) {
+      const hit = !q || (card.dataset.search ?? "").toLowerCase().includes(q);
+      card.hidden = !hit;
+      if (hit) visible++;
+    }
+    section.hidden = visible === 0;
   }
 }
 
@@ -602,16 +666,44 @@ function render() {
   const chosen = orderedSelection();
   const usable = files.filter((f) => !f.error).length;
   const needsTwo = selected.has("merge") && usable < 2;
-  runBtn.disabled = busy || usable === 0 || chosen.length === 0 || needsTwo || (selected.has("annotate") && !!editor);
-  runBtn.textContent = busy
-    ? "處理中…"
-    : chosen.length === 0
-      ? "請先勾選功能"
-      : selected.has("annotate")
-        ? "開啟編輯器"
-        : chosen.length === 1
-          ? chosen[0].label
-          : `依序執行 ${chosen.length} 項：${chosen.map((t) => t.label).join(" → ")}`;
+
+  // 收合狀態下也要看得到選了什麼，所以 chips 放在 summary 裡。
+  const chipsEl = $<HTMLElement>("chips");
+  chipsEl.innerHTML = "";
+  if (chosen.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "chips-empty";
+    empty.textContent = "尚未選擇";
+    chipsEl.append(empty);
+  } else {
+    chosen.forEach((t, i) => {
+      if (i > 0) {
+        const arrow = document.createElement("span");
+        arrow.className = "chip-arrow";
+        arrow.textContent = "→";
+        chipsEl.append(arrow);
+      }
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = t.label;
+      chipsEl.append(chip);
+    });
+  }
+
+  runBtn.disabled =
+    busy || usable === 0 || chosen.length === 0 || needsTwo || (selected.has("annotate") && !!editor);
+  runBtn.textContent = busy ? "處理中…" : selected.has("annotate") ? "開啟編輯器" : "執行";
+
+  $<HTMLElement>("plan").textContent =
+    usable === 0
+      ? `先加入檔案（目前接受 ${accepting().name}）`
+      : chosen.length === 0
+        ? "已加入檔案，接著勾選功能"
+        : needsTwo
+          ? "「合併」至少需要兩個檔案"
+          : selected.has("annotate")
+            ? `對 ${files[0]?.name ?? "檔案"} 開啟編輯器`
+            : `${usable} 個檔案　·　${chosen.map((t) => t.label).join(" → ")}`;
 
   $<HTMLElement>("acceptHint").textContent = `　（目前接受 ${accepting().name}）`;
   saveAllBtn.hidden = !results.some((r) => !r.error);
@@ -631,12 +723,16 @@ const edEls = {
   mode: $<HTMLElement>("edMode"),
 };
 
+type EdMode = "text" | "ink" | "redact";
+
 let editor: Editor | null = null;
 let edPage = 0;
-let edMode: "text" | "ink" = "text";
+let edMode: EdMode = "text";
 let edSource = "";
 let edStrokes: CanvasPoint[][] = [];
 let edDrawing = false;
+/** 塗黑框選的起點 */
+let edRectFrom: CanvasPoint | null = null;
 
 const edColor = (): [number, number, number] => hexToRgb($<HTMLInputElement>("edColor").value);
 const edSize = () => Math.min(120, Math.max(6, num("edSize")));
@@ -682,14 +778,19 @@ function edClose() {
   render();
 }
 
-function edSetMode(mode: "text" | "ink") {
+const MODE_HINT: Record<EdMode, string> = {
+  text: "文字模式：點一下頁面任意處，輸入文字後按 Enter。",
+  ink: "手繪模式：在頁面上按住拖曳。放開時筆跡才會寫入，畫面會重畫一次。",
+  redact: "塗黑模式：拖出一塊矩形標記要移除的內容。存檔時會從檔案真的刪除，無法還原。",
+};
+
+function edSetMode(mode: EdMode) {
   edMode = mode;
-  $<HTMLButtonElement>("edModeText").classList.toggle("active", mode === "text");
-  $<HTMLButtonElement>("edModeInk").classList.toggle("active", mode === "ink");
-  edEls.mode.textContent =
-    mode === "text"
-      ? "文字模式：點一下頁面任意處，輸入文字後按 Enter。"
-      : "手繪模式：在頁面上按住拖曳。放開時筆跡才會寫入，畫面會重畫一次。";
+  for (const [id, m] of [["edModeText", "text"], ["edModeInk", "ink"], ["edModeRedact", "redact"]] as const) {
+    $<HTMLButtonElement>(id).classList.toggle("active", mode === m);
+  }
+  edEls.mode.textContent = MODE_HINT[mode];
+  edEls.mode.classList.toggle("danger", mode === "redact");
 }
 
 /** 在點擊處浮出輸入框，Enter 送出、Esc 取消。 */
@@ -725,8 +826,7 @@ function edPromptText(at: CanvasPoint, clientX: number, clientY: number) {
 
 /** 把目前累積的筆跡寫成註記。失敗一定要說出來，不能靜默丟掉。 */
 async function edCommitInk() {
-  if (!edDrawing || !editor) return;
-  edDrawing = false;
+  if (!editor) return;
   const strokes = edStrokes;
   edStrokes = [];
   if (strokes.length === 0) return;
@@ -740,6 +840,21 @@ async function edCommitInk() {
   }
 }
 
+/** 把框選的區域標記成塗黑。 */
+async function edCommitRedaction(to: CanvasPoint) {
+  const from = edRectFrom;
+  edRectFrom = null;
+  if (!from || !editor) return;
+  try {
+    editor.markRedaction(from, to);
+    await edRender();
+    setStatus(`已標記 ${editor.redactionCount} 塊塗黑區域。存檔時才會真的移除。`);
+  } catch (e) {
+    setStatus(`標記塗黑失敗：${e instanceof Error ? e.message : String(e)}`);
+    await edRender();
+  }
+}
+
 edEls.canvas.onpointerdown = (e) => {
   if (!editor) return;
   const p = edPoint(e);
@@ -747,8 +862,12 @@ edEls.canvas.onpointerdown = (e) => {
     edPromptText(p, e.clientX, e.clientY);
     return;
   }
+  if (edMode === "redact") {
+    edRectFrom = p;
+  } else {
+    edStrokes = [[p]];
+  }
   edDrawing = true;
-  edStrokes = [[p]];
   try {
     edEls.canvas.setPointerCapture(e.pointerId);
   } catch {
@@ -759,11 +878,32 @@ edEls.canvas.onpointerdown = (e) => {
 edEls.canvas.onpointermove = (e) => {
   if (!edDrawing || !editor) return;
   const p = edPoint(e);
+  const ctx = edEls.canvas.getContext("2d");
+  if (!ctx) return;
+
+  if (edMode === "redact") {
+    if (!edRectFrom) return;
+    // 每次都重畫整頁再疊上目前的框，否則會留下一堆殘影
+    void editor.renderTo(edEls.canvas, edPage).then(() => {
+      const c = edEls.canvas.getContext("2d");
+      if (!c || !edRectFrom) return;
+      c.fillStyle = "rgb(0 0 0 / 0.55)";
+      c.strokeStyle = "rgb(200 0 0)";
+      c.lineWidth = 2;
+      const x = Math.min(edRectFrom.x, p.x);
+      const y = Math.min(edRectFrom.y, p.y);
+      const w = Math.abs(p.x - edRectFrom.x);
+      const h = Math.abs(p.y - edRectFrom.y);
+      c.fillRect(x, y, w, h);
+      c.strokeRect(x, y, w, h);
+    });
+    return;
+  }
+
   const stroke = edStrokes[edStrokes.length - 1];
   stroke.push(p);
   // 即時預覽；正式的筆跡在放開時才寫進註記，之後重畫會取代這條線。
-  const ctx = edEls.canvas.getContext("2d");
-  if (!ctx || stroke.length < 2) return;
+  if (stroke.length < 2) return;
   const [r, g, b] = edColor();
   ctx.strokeStyle = `rgb(${r * 255} ${g * 255} ${b * 255})`;
   ctx.lineWidth = Math.max(1, edSize() / 8) * editor.scale;
@@ -776,10 +916,20 @@ edEls.canvas.onpointermove = (e) => {
   ctx.stroke();
 };
 
-// pointerup 有可能因為指標捕捉中斷而不觸發，所以另外兩個事件也要收尾。
-edEls.canvas.onpointerup = () => void edCommitInk();
-edEls.canvas.onpointercancel = () => void edCommitInk();
-edEls.canvas.onlostpointercapture = () => void edCommitInk();
+/** pointerup 有可能因指標捕捉中斷而不觸發，所以另外兩個事件也要收尾。 */
+function edFinishDrag(e?: PointerEvent) {
+  if (!edDrawing) return;
+  edDrawing = false;
+  if (edMode === "redact") {
+    void edCommitRedaction(e ? edPoint(e) : (edRectFrom ?? { x: 0, y: 0 }));
+  } else {
+    void edCommitInk();
+  }
+}
+
+edEls.canvas.onpointerup = (e) => edFinishDrag(e);
+edEls.canvas.onpointercancel = () => edFinishDrag();
+edEls.canvas.onlostpointercapture = () => edFinishDrag();
 
 $<HTMLButtonElement>("edPrev").onclick = () => {
   edPage = Math.max(0, edPage - 1);
@@ -807,12 +957,14 @@ $<HTMLButtonElement>("edUndo").onclick = async () => {
 };
 $<HTMLButtonElement>("edModeText").onclick = () => edSetMode("text");
 $<HTMLButtonElement>("edModeInk").onclick = () => edSetMode("ink");
+$<HTMLButtonElement>("edModeRedact").onclick = () => edSetMode("redact");
 $<HTMLButtonElement>("edClose").onclick = () => {
   edClose();
   setStatus("已關閉編輯器，未儲存的變更已丟棄。");
 };
 $<HTMLButtonElement>("edSave").onclick = async () => {
   if (!editor) return;
+  const redacted = editor.redactionCount;
   try {
     const bytes = editor.save();
     // Rust 那側只收 base64；直接傳 Uint8Array 會變成 JSON 數字陣列。
@@ -824,7 +976,11 @@ $<HTMLButtonElement>("edSave").onclick = async () => {
     });
     results = [...results, result];
     edClose();
-    setStatus("已產生註記後的檔案，請在下方清單儲存。尚未存檔前只存在暫存區。");
+    setStatus(
+      redacted > 0
+        ? `已套用 ${redacted} 塊塗黑並完整重寫檔案，被塗掉的內容不會留在檔案裡。請在下方清單儲存。`
+        : "已產生註記後的檔案，請在下方清單儲存。尚未存檔前只存在暫存區。",
+    );
   } catch (e) {
     setStatus(e instanceof Error ? e.message : String(e));
   }
@@ -922,6 +1078,9 @@ async function showEngines() {
   engineEl.textContent = parts.join("　·　");
   engineEl.className = e.ghostscript ? "engine ok" : "engine bad";
 }
+
+$<HTMLInputElement>("toolFilter").oninput = (e) =>
+  filterTools((e.target as HTMLInputElement).value);
 
 buildToolCards();
 edSetMode("text");

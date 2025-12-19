@@ -293,6 +293,31 @@ async fn inspect(paths: Vec<String>) -> Vec<FileInfo> {
     .unwrap_or_default()
 }
 
+/// 產生第一頁的縮圖，讓檔案清單看得到內容而不只是檔名。
+///
+/// 刻意在 Rust 這側算圖再把 JPEG 位元組交出去——這樣整份 PDF 的內容仍然只存在於
+/// Rust，前端拿到的只有一張小圖。若改用前端的 MuPDF 算縮圖會方便得多，
+/// 但那等於為了視覺效果把每個工具的資料路徑都打開，不划算。
+///
+/// 36 dpi 就夠了：實測成本幾乎全在 Ghostscript 的行程啟動（約 180 ms），
+/// 提高解析度並不會變慢多少，但檔案會變大。
+#[tauri::command]
+async fn thumbnail(state: State<'_, AppState>, path: String) -> Result<tauri::ipc::Response, String> {
+    let gs = state.gs.clone().ok_or("找不到算圖引擎")?;
+    let root = state.eph_root.clone();
+
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let eph = Ephemeral::new(&root).map_err(|e| format!("無法建立暫存檔：{e}"))?;
+        gs::render_page(&gs, Path::new(&path), 1, 36, gs::ImageFormat::Jpeg, eph.path())?;
+        // eph 在這個區塊結束時抹除，縮圖只以位元組形式離開。
+        std::fs::read(eph.path()).map_err(|e| format!("讀不到縮圖：{e}"))
+    })
+    .await
+    .map_err(|e| format!("工作執行緒異常：{e}"))??;
+
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// 把檔案內容交給前端。
 ///
 /// **只有「轉成 Markdown」會用到。** 其他工具的檔案內容都只存在於 Rust 這側，
@@ -1076,6 +1101,7 @@ pub fn run() {
             engine_status,
             list_fonts,
             inspect,
+            thumbnail,
             read_file_bytes,
             markdown_from_lines,
             save_edited,
