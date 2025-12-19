@@ -251,6 +251,91 @@ button.ghost { background: none; border-color: var(--line); color: var(--text); 
 .item button { padding: 5px 12px; font-size: 0.82rem; }
 .item button.tiny { padding: 3px 8px; line-height: 1.2; }
 
+/* ---- 註記編輯器 ---- */
+
+.editor { margin-top: 14px; display: grid; gap: 10px; }
+
+.editor-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.editor-bar .sep {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+}
+.editor-bar .inline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.82rem;
+  color: var(--dim);
+}
+.editor-bar .inline input[type="number"] {
+  width: 60px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.editor-bar .inline input[type="color"] {
+  width: 34px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+button.mode {
+  padding: 5px 12px;
+  font-size: 0.85rem;
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+button.mode.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.editor-stage {
+  position: relative;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 6%, var(--panel));
+  text-align: center;
+}
+#edCanvas {
+  display: inline-block;
+  max-width: none;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.18);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.floating-input {
+  position: absolute;
+  z-index: 2;
+  min-width: 200px;
+  padding: 6px 9px;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+.editor-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
 .sr-only {
   position: absolute;
   width: 1px; height: 1px;

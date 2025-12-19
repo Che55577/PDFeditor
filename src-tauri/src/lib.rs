@@ -216,6 +216,41 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(data))
 }
 
+/// 收下註記編輯器存出的 PDF，寫進暫存區並納入既有的儲存流程。
+///
+/// 用 base64 而不是 `Vec<u8>`：後者會被序列化成 JSON 數字陣列，一份 10 MB 的 PDF
+/// 會膨脹成三四十 MB 的字串。base64 只多三分之一。
+#[tauri::command]
+fn save_edited(
+    state: State<'_, AppState>,
+    name: String,
+    data_base64: String,
+) -> Result<JobResult, String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("資料損毀：{e}"))?;
+    if !bytes.starts_with(b"%PDF-") {
+        return Err("產出的不是有效的 PDF".into());
+    }
+
+    let eph = Ephemeral::new(&state.eph_root).map_err(|e| format!("無法建立暫存檔：{e}"))?;
+    std::fs::write(eph.path(), &bytes).map_err(|e| format!("無法寫出檔案：{e}"))?;
+
+    let id = file_name(eph.path(), "");
+    let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&name).to_string();
+    let out_bytes = bytes.len() as u64;
+    state.jobs.lock().unwrap().insert(id.clone(), eph);
+
+    Ok(JobResult {
+        id,
+        name: format!("{stem}_annotated.pdf"),
+        orig_bytes: 0,
+        out_bytes,
+        error: None,
+    })
+}
+
 /// 把前端抽出來的結構化文字寫成 Markdown 暫存檔。
 #[tauri::command]
 fn markdown_from_lines(
@@ -793,6 +828,7 @@ pub fn run() {
             inspect,
             read_file_bytes,
             markdown_from_lines,
+            save_edited,
             run_op,
             save_job,
             discard_all

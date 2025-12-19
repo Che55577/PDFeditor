@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
+import { Editor, type CanvasPoint } from "./editor";
 import { extractLines } from "./mupdf-text";
 
 type Tool =
@@ -20,7 +21,8 @@ type Tool =
   | "pagenumbers"
   | "officetopdf"
   | "tomarkdown"
-  | "stamp";
+  | "stamp"
+  | "annotate";
 type Level = "extreme" | "recommended" | "low";
 
 interface FileInfo {
@@ -73,6 +75,7 @@ const LABEL: Record<Tool, string> = {
   officetopdf: "轉成 PDF",
   tomarkdown: "轉成 Markdown",
   stamp: "蓋圖章",
+  annotate: "開啟編輯器",
 };
 
 /** 圖章的圖片檔另外選，不進批次清單。 */
@@ -101,6 +104,7 @@ const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
   officetopdf: { name: "Office 文件", extensions: OFFICE_EXTS },
   tomarkdown: { name: "PDF", extensions: ["pdf"] },
   stamp: { name: "PDF", extensions: ["pdf"] },
+  annotate: { name: "PDF", extensions: ["pdf"] },
 };
 
 /** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
@@ -217,6 +221,9 @@ function buildOperation(): object {
       return { kind: "officeToPdf" };
     case "tomarkdown":
       return { kind: "toMarkdown" };
+    case "annotate":
+      // 編輯器不走 run_op，這個分支只是為了讓型別完整
+      return { kind: "annotate" };
     case "stamp": {
       if (!stampImage) throw new Error("請先選擇圖章圖片");
       const width = num("stampWidth");
@@ -409,7 +416,8 @@ function render() {
   }
 
   const usable = files.filter((f) => !f.error).length;
-  runBtn.disabled = busy || usable === 0 || (tool === "merge" && usable < 2);
+  runBtn.disabled =
+    busy || usable === 0 || (tool === "merge" && usable < 2) || (tool === "annotate" && !!editor);
   runBtn.textContent = busy ? "處理中…" : LABEL[tool];
   saveAllBtn.hidden = !results.some((r) => !r.error);
   clearBtn.hidden = results.length === 0 && files.length === 0;
@@ -445,6 +453,200 @@ async function runMarkdown(paths: string[]): Promise<JobResult[]> {
   return out;
 }
 
+// ---- 註記編輯器 ----
+
+const edEls = {
+  panel: $<HTMLElement>("editor"),
+  canvas: $<HTMLCanvasElement>("edCanvas"),
+  input: $<HTMLInputElement>("edInput"),
+  page: $<HTMLElement>("edPage"),
+  zoom: $<HTMLElement>("edZoom"),
+  hint: $<HTMLElement>("edHint"),
+};
+
+let editor: Editor | null = null;
+let edPage = 0;
+let edMode: "text" | "ink" = "text";
+let edSource = "";
+/** 手繪進行中的筆畫，pointerup 時才寫進註記。 */
+let edStrokes: CanvasPoint[][] = [];
+let edDrawing = false;
+
+const edColor = (): [number, number, number] => hexToRgb($<HTMLInputElement>("edColor").value);
+const edSize = () => Math.min(120, Math.max(6, num("edSize")));
+
+/** 滑鼠事件轉畫布像素。畫布可能被 CSS 縮放過，所以要用 rect 換算。 */
+function edPoint(e: PointerEvent): CanvasPoint {
+  const c = edEls.canvas;
+  const rect = c.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (c.width / rect.width),
+    y: (e.clientY - rect.top) * (c.height / rect.height),
+  };
+}
+
+async function edRender() {
+  if (!editor) return;
+  const info = await editor.renderTo(edEls.canvas, edPage);
+  edPage = info.index;
+  edEls.page.textContent = `${info.index + 1} / ${info.total}`;
+  edEls.zoom.textContent = `${Math.round(editor.scale * 100)}%`;
+  edEls.hint.textContent = editor.dirty ? "有未儲存的變更" : "";
+}
+
+async function edOpen(path: string) {
+  edSource = path.split(/[\\/]/).pop() ?? path;
+  setStatus(`載入 ${edSource}…`);
+  const buf = await invoke<ArrayBuffer>("read_file_bytes", { path });
+  editor = await Editor.open(new Uint8Array(buf));
+  edPage = 0;
+  edEls.panel.hidden = false;
+  await edRender();
+  setStatus(`已開啟 ${edSource}，共 ${editor.pageCount} 頁。點一下頁面加入註記。`);
+  render();
+}
+
+function edClose() {
+  editor?.destroy();
+  editor = null;
+  edStrokes = [];
+  edDrawing = false;
+  edEls.panel.hidden = true;
+  edEls.input.hidden = true;
+  render();
+}
+
+/** 在點擊處浮出輸入框，Enter 送出、Esc 取消。 */
+function edPromptText(at: CanvasPoint, clientX: number, clientY: number) {
+  const stage = edEls.canvas.parentElement!;
+  const box = stage.getBoundingClientRect();
+  const input = edEls.input;
+  input.value = "";
+  input.hidden = false;
+  input.style.left = `${clientX - box.left + stage.scrollLeft}px`;
+  input.style.top = `${clientY - box.top + stage.scrollTop}px`;
+  input.focus();
+
+  const finish = async (commit: boolean) => {
+    input.hidden = true;
+    input.onkeydown = null;
+    input.onblur = null;
+    if (!commit || !input.value.trim() || !editor) return;
+    try {
+      editor.addText(at, input.value, { size: edSize(), color: edColor() });
+      await edRender();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  };
+  input.onkeydown = (ev) => {
+    if (ev.key === "Enter") void finish(true);
+    else if (ev.key === "Escape") void finish(false);
+  };
+  input.onblur = () => void finish(false);
+}
+
+edEls.canvas.onpointerdown = (e) => {
+  if (!editor) return;
+  const p = edPoint(e);
+  if (edMode === "text") {
+    edPromptText(p, e.clientX, e.clientY);
+    return;
+  }
+  edDrawing = true;
+  edStrokes = [[p]];
+  edEls.canvas.setPointerCapture(e.pointerId);
+};
+
+edEls.canvas.onpointermove = (e) => {
+  if (!edDrawing || !editor) return;
+  const p = edPoint(e);
+  edStrokes[edStrokes.length - 1].push(p);
+  // 即時預覽；正式的筆跡在 pointerup 才寫進註記，之後重畫會取代這條線。
+  const ctx = edEls.canvas.getContext("2d");
+  if (!ctx) return;
+  const [r, g, b] = edColor();
+  ctx.strokeStyle = `rgb(${r * 255} ${g * 255} ${b * 255})`;
+  ctx.lineWidth = Math.max(1, edSize() / 8) * editor.scale;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  const stroke = edStrokes[edStrokes.length - 1];
+  const prev = stroke[stroke.length - 2];
+  ctx.beginPath();
+  ctx.moveTo(prev.x, prev.y);
+  ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+};
+
+edEls.canvas.onpointerup = async () => {
+  if (!edDrawing || !editor) return;
+  edDrawing = false;
+  try {
+    editor.addInk(edStrokes, { width: Math.max(1, edSize() / 8), color: edColor() });
+  } catch {
+    // 只有單一個點的筆畫沒有意義，忽略
+  }
+  edStrokes = [];
+  await edRender();
+};
+
+$<HTMLButtonElement>("edPrev").onclick = () => {
+  edPage = Math.max(0, edPage - 1);
+  void edRender();
+};
+$<HTMLButtonElement>("edNext").onclick = () => {
+  edPage = Math.min((editor?.pageCount ?? 1) - 1, edPage + 1);
+  void edRender();
+};
+$<HTMLButtonElement>("edZoomIn").onclick = () => {
+  editor?.setScale((editor?.scale ?? 1) * 1.25);
+  void edRender();
+};
+$<HTMLButtonElement>("edZoomOut").onclick = () => {
+  editor?.setScale((editor?.scale ?? 1) / 1.25);
+  void edRender();
+};
+$<HTMLButtonElement>("edUndo").onclick = async () => {
+  if (!editor?.undoLast()) {
+    setStatus("這一頁沒有可以移除的註記。");
+    return;
+  }
+  await edRender();
+};
+$<HTMLButtonElement>("edModeText").onclick = () => {
+  edMode = "text";
+  $<HTMLButtonElement>("edModeText").classList.add("active");
+  $<HTMLButtonElement>("edModeInk").classList.remove("active");
+};
+$<HTMLButtonElement>("edModeInk").onclick = () => {
+  edMode = "ink";
+  $<HTMLButtonElement>("edModeInk").classList.add("active");
+  $<HTMLButtonElement>("edModeText").classList.remove("active");
+};
+$<HTMLButtonElement>("edClose").onclick = () => {
+  edClose();
+  setStatus("已關閉編輯器，未儲存的變更已丟棄。");
+};
+$<HTMLButtonElement>("edSave").onclick = async () => {
+  if (!editor) return;
+  try {
+    const bytes = editor.save();
+    // Rust 那側只收 base64；直接傳 Uint8Array 會變成 JSON 數字陣列。
+    let binary = "";
+    for (const b of bytes) binary += String.fromCharCode(b);
+    const result = await invoke<JobResult>("save_edited", {
+      name: edSource,
+      dataBase64: btoa(binary),
+    });
+    results = [...results, result];
+    edClose();
+    setStatus("已產生註記後的檔案，請在下方清單儲存。尚未存檔前只存在暫存區。");
+    render();
+  } catch (e) {
+    setStatus(e instanceof Error ? e.message : String(e));
+  }
+};
+
 async function runOp() {
   if (busy || files.length === 0) return;
   let op: object;
@@ -458,6 +660,21 @@ async function runOp() {
   busy = true;
   render();
   const batch = files.filter((f) => !f.error).map((f) => f.path);
+
+  // 註記是互動式的，不走批次流程。
+  if (tool === "annotate") {
+    try {
+      await edOpen(batch[0]);
+      files = [];
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    } finally {
+      busy = false;
+      render();
+    }
+    return;
+  }
+
   try {
     const out =
       tool === "tomarkdown"

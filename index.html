@@ -31,6 +31,7 @@
         <button type="button" data-tool="pagenumbers">頁碼</button>
         <button type="button" data-tool="officetopdf">Office 轉 PDF</button>
         <button type="button" data-tool="tomarkdown">轉成 Markdown</button>
+        <button type="button" data-tool="annotate">註記</button>
       </nav>
 
       <section id="drop" class="drop">
@@ -223,6 +224,44 @@
 
       <p id="status" class="status" role="status"></p>
       <ul id="list" class="list"></ul>
+
+      <section id="editor" class="editor" hidden>
+        <div class="editor-bar">
+          <button id="edPrev" type="button" class="ghost tiny">◀</button>
+          <span id="edPage" class="meta">1 / 1</span>
+          <button id="edNext" type="button" class="ghost tiny">▶</button>
+          <span class="sep"></span>
+          <button id="edModeText" type="button" class="mode active">文字</button>
+          <button id="edModeInk" type="button" class="mode">手繪</button>
+          <span class="sep"></span>
+          <label class="inline"><span>字級</span><input id="edSize" type="number" min="6" max="120" value="16" /></label>
+          <label class="inline"><span>顏色</span><input id="edColor" type="color" value="#cc0000" /></label>
+          <span class="sep"></span>
+          <button id="edZoomOut" type="button" class="ghost tiny">−</button>
+          <span id="edZoom" class="meta">150%</span>
+          <button id="edZoomIn" type="button" class="ghost tiny">＋</button>
+          <span class="sep"></span>
+          <button id="edUndo" type="button" class="ghost tiny">移除上一個</button>
+        </div>
+
+        <div class="editor-stage">
+          <canvas id="edCanvas"></canvas>
+          <input id="edInput" class="floating-input" type="text" placeholder="輸入文字後按 Enter" hidden />
+        </div>
+
+        <div class="editor-actions">
+          <button id="edSave" type="button">完成並儲存…</button>
+          <button id="edClose" type="button" class="ghost">關閉</button>
+          <span id="edHint" class="hint"></span>
+        </div>
+
+        <p class="hint">
+          這是<strong>疊加式註記</strong>，改不了文件裡既有的文字——PDF 沒有段落的概念，
+          原有文字的位置在產生檔案時就已經固定。存檔採增量寫入，原始內容一個位元組都不動。
+          <br />
+          也因此，<strong>用色塊蓋住敏感資料並不安全</strong>，被蓋住的內容仍然留在檔案裡。
+        </p>
+      </section>
     </main>
 
     <script type="module" src="/src/main.ts"></script>
