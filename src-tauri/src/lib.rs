@@ -202,6 +202,48 @@ async fn inspect(paths: Vec<String>) -> Vec<FileInfo> {
     .unwrap_or_default()
 }
 
+/// 把檔案內容交給前端。
+///
+/// **只有「轉成 Markdown」會用到。** 其他工具的檔案內容都只存在於 Rust 這側，
+/// 前端拿得到的僅有路徑。這裡開這個口是因為 MuPDF 只有 WASM 版可用，
+/// 而它需要拿到位元組——理由見 `docs/edit-pdf-analysis.md` 第 8.4 節。
+///
+/// 回傳 `Response` 而不是 `Vec<u8>`：後者會被序列化成 JSON 數字陣列，
+/// 一份 30 MB 的 PDF 會膨脹成上百 MB 的字串。
+#[tauri::command]
+fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    let data = std::fs::read(&path).map_err(|e| format!("無法讀取檔案：{e}"))?;
+    Ok(tauri::ipc::Response::new(data))
+}
+
+/// 把前端抽出來的結構化文字寫成 Markdown 暫存檔。
+#[tauri::command]
+fn markdown_from_lines(
+    state: State<'_, AppState>,
+    name: String,
+    lines: Vec<markdown::TextLine>,
+) -> Result<JobResult, String> {
+    let content = markdown::render_structured(&lines);
+    if content.trim().is_empty() {
+        return Err("這份 PDF 沒有可抽取的文字，可能是掃描件——請先做 OCR".into());
+    }
+    let eph = Ephemeral::new(&state.eph_root).map_err(|e| format!("無法建立暫存檔：{e}"))?;
+    std::fs::write(eph.path(), &content).map_err(|e| format!("無法寫出檔案：{e}"))?;
+
+    let id = file_name(eph.path(), "");
+    let out_bytes = content.len() as u64;
+    let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(&name).to_string();
+    state.jobs.lock().unwrap().insert(id.clone(), eph);
+
+    Ok(JobResult {
+        id,
+        name: format!("{stem}.md"),
+        orig_bytes: 0,
+        out_bytes,
+        error: None,
+    })
+}
+
 #[tauri::command]
 async fn run_op(
     app: AppHandle,
@@ -749,6 +791,8 @@ pub fn run() {
             engine_status,
             list_fonts,
             inspect,
+            read_file_bytes,
+            markdown_from_lines,
             run_op,
             save_job,
             discard_all

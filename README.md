@@ -29,6 +29,21 @@ PNG 沒有這個待遇，必須解碼後重新以 Flate 編碼。但它換來的
 都帶透明背景，沒有它蓋出來會是一個白方塊糊住文件。透明度在 PDF 裡是獨立的灰階影像，
 掛在影像的 `/SMask` 上。
 
+### 轉成 Markdown 是唯一把檔案內容讀進 WebView 的工具
+
+其他所有工具的檔案內容都只存在於 Rust 那側，前端拿得到的僅有路徑。Markdown 是例外，
+因為它用 **MuPDF（WASM）** 抽取帶字級的結構化文字——Ghostscript 的 `txtwrite` 中文正確
+但不輸出字級，標題層級只能靠行寬猜。
+
+不用原生的 `mupdf-rs`：它綑綁 C 原始碼、需要 libclang，且 Windows/MSVC 建置被回報不穩定。
+完整理由見 [`docs/edit-pdf-analysis.md`](docs/edit-pdf-analysis.md) 第 8.4 節。
+
+MuPDF 載入失敗時會自動退回 Ghostscript 那條路，標題層級較不準但仍可用。
+
+`public/mupdf/` 的檔案是從 `node_modules/mupdf/dist/` 複製過來的，刻意不讓 Vite 打包——
+MuPDF 用 `new URL("mupdf-wasm.wasm", import.meta.url)` 找自己的 WASM，經過打包後模組路徑
+會變，WASM 就找不到了。
+
 ### LibreOffice 是唯一不隨程式打包的引擎
 
 完整安裝約 350 MB，塞進安裝檔會讓體積從 20 MB 變成十幾倍，所以改為偵測系統上既有的安裝，

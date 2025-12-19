@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
+import { extractLines } from "./mupdf-text";
+
 type Tool =
   | "compress"
   | "merge"
@@ -413,6 +415,36 @@ function render() {
   clearBtn.hidden = results.length === 0 && files.length === 0;
 }
 
+/**
+ * Markdown 走的路和其他工具不同：檔案內容讀進 WebView，交給 MuPDF 抽出**帶字級**的
+ * 結構化文字，Rust 只負責整理成 Markdown 並寫進暫存區。
+ *
+ * 這麼做是因為 Ghostscript 的文字抽取拿不到字級，標題層級只能靠行寬猜。
+ * MuPDF 載入失敗時退回原本那條路——標題會比較不準，但至少還能用。
+ */
+async function runMarkdown(paths: string[]): Promise<JobResult[]> {
+  const out: JobResult[] = [];
+  for (const [i, path] of paths.entries()) {
+    const name = path.split(/[\\/]/).pop() ?? path;
+    setStatus(`處理中 ${i + 1}/${paths.length}：${name}`);
+    try {
+      const buf = await invoke<ArrayBuffer>("read_file_bytes", { path });
+      const lines = await extractLines(new Uint8Array(buf));
+      out.push(await invoke<JobResult>("markdown_from_lines", { name, lines }));
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      setStatus(`${name}：改用備援方式抽取（${detail}）`);
+      out.push(
+        ...(await invoke<JobResult[]>("run_op", {
+          paths: [path],
+          op: { kind: "toMarkdown" },
+        })),
+      );
+    }
+  }
+  return out;
+}
+
 async function runOp() {
   if (busy || files.length === 0) return;
   let op: object;
@@ -427,7 +459,10 @@ async function runOp() {
   render();
   const batch = files.filter((f) => !f.error).map((f) => f.path);
   try {
-    const out = await invoke<JobResult[]>("run_op", { paths: batch, op });
+    const out =
+      tool === "tomarkdown"
+        ? await runMarkdown(batch)
+        : await invoke<JobResult[]>("run_op", { paths: batch, op });
     results = [...results, ...out];
     files = [];
     const ok = out.filter((r) => !r.error).length;

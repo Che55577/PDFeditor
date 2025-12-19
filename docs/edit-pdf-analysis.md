@@ -230,3 +230,36 @@ MuPDF.js 都給了。剩下的主要是編輯器 UI 與座標映射——那部�
 
 **建議順序：二 → 二之二 → 三。** 階段二之二 是刻意安排的：用一個小範圍、低風險的功能
 先把 MuPDF.js 整進建置流程與打包，等真的要做編輯器時，這個相依已經被驗證過了。
+
+# 九、階段二與二之二的實作紀錄
+
+## 9.1 階段二（圖章）：真正的工作是透明度
+
+圖章本身很單純，難的是**簽名檔與公司章幾乎都是帶透明背景的 PNG**。原本的影像嵌入
+只做 JPEG 原樣傳遞，沒有 alpha 通道——蓋出來會是一個白方塊糊住文件。
+
+PNG 必須解碼後以 Flate 重新編碼，透明度則是獨立的灰階影像掛在 `/SMask` 上。
+做完之後「JPG 轉 PDF」自動獲得 PNG 支援，改名為「圖片轉 PDF」。
+
+`annotate.rs` 的疊加函式一般化成可以掛任意資源（字型或影像），浮水印、頁碼、圖章
+共用同一條路徑。
+
+## 9.2 階段二之二（MuPDF 整合）：踩到的坑與結果
+
+**WASM 定位問題。** MuPDF 用 `new URL("mupdf-wasm.wasm", import.meta.url)` 找自己的
+WASM 二進位。讓 Vite 打包 `mupdf.js` 之後，模組會變成 `/assets/index-xxxx.js`，
+WASM 就會被找到 `/assets/mupdf-wasm.wasm`——那裡沒有東西。
+
+解法是**完全不讓 Vite 碰它**：把三個檔案複製到 `public/mupdf/`，用變數當 specifier
+做動態 import（變數可以讓 TypeScript 與 Vite 都不去解析這個路徑）。
+模組 URL 固定是 `/mupdf/mupdf.js`，WASM 就穩定解析到 `/mupdf/mupdf-wasm.wasm`。
+
+**資料路徑的改變。** Markdown 現在是唯一把檔案內容讀進 WebView 的工具。新增的
+`read_file_bytes` 命令回傳 `tauri::ipc::Response` 而不是 `Vec<u8>`——後者會被序列化成
+JSON 數字陣列，一份 30 MB 的 PDF 會膨脹成上百 MB 的字串。
+
+**備援路徑。** MuPDF 載入失敗時自動退回 Ghostscript 抽文字。多一條路徑是額外的維護
+成本，但這是新引擎第一次進到產品裡，值得留退路。
+
+**成果。** 標題層級不再靠行寬猜，直接來自字級；段落邊界也直接用 MuPDF 的區塊，
+比從行寬推斷可靠得多。

@@ -25,7 +25,106 @@ pub fn to_markdown(gs: &Path, input: &Path, output: &Path) -> Result<()> {
     std::fs::write(output, md).map_err(|e| format!("無法寫出檔案：{e}"))
 }
 
+/// 帶字級與區塊資訊的一行文字，由前端的 MuPDF 抽取而來。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TextLine {
+    pub text: String,
+    pub size: f64,
+    #[allow(dead_code)]
+    pub x: f64,
+    #[allow(dead_code)]
+    pub y: f64,
+    /// 全文件唯一的區塊編號，大致等於段落。
+    pub block: usize,
+}
+
+/// 字級要比內文大多少才算標題。1.15 是留給行距抖動的餘裕。
+const HEADING_RATIO: f64 = 1.15;
+
+/// 用字級與區塊資訊產生 Markdown。
+///
+/// 這條路徑比 [`render`] 準確得多——區塊邊界直接就是段落，標題層級來自實際字級
+/// 而不是行寬猜測。代價是需要 MuPDF（見 `src/mupdf-text.ts` 的說明）。
+pub fn render_structured(lines: &[TextLine]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    // 內文字級 = 出現行數最多的那個字級。標題再多也不會比內文多。
+    let body = dominant_size(lines);
+
+    // 比內文大的字級由大到小排序，名次就是標題層級。
+    let mut heading_sizes: Vec<f64> = lines
+        .iter()
+        .map(|l| l.size)
+        .filter(|s| *s > body * HEADING_RATIO)
+        .collect();
+    heading_sizes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    heading_sizes.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+
+    let mut out = String::new();
+    for group in group_blocks(lines) {
+        let text = join_lines(&group);
+        if text.is_empty() {
+            continue;
+        }
+        let size = group.iter().map(|l| l.size).fold(0.0, f64::max);
+
+        if let Some(rank) = heading_sizes.iter().position(|s| (*s - size).abs() < 0.5) {
+            let level = (rank + 1).min(6);
+            out.push_str(&format!("\n{} {}\n", "#".repeat(level), text));
+        } else if let Some(rest) = list_marker(&text) {
+            out.push_str(&format!("- {}\n", escape(rest)));
+        } else {
+            out.push_str(&format!("\n{}\n", escape(&text)));
+        }
+    }
+    out.trim().replace("\n\n\n", "\n\n") + "\n"
+}
+
+/// 出現行數最多的字級。
+fn dominant_size(lines: &[TextLine]) -> f64 {
+    let mut tally: Vec<(f64, usize)> = Vec::new();
+    for line in lines {
+        match tally.iter_mut().find(|(s, _)| (*s - line.size).abs() < 0.5) {
+            Some((_, n)) => *n += 1,
+            None => tally.push((line.size, 1)),
+        }
+    }
+    tally
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(s, _)| s)
+        .unwrap_or(12.0)
+}
+
+/// 依區塊編號把行分組，保持原順序。
+fn group_blocks(lines: &[TextLine]) -> Vec<Vec<TextLine>> {
+    let mut out: Vec<Vec<TextLine>> = Vec::new();
+    for line in lines {
+        match out.last_mut() {
+            Some(g) if g[0].block == line.block => g.push(line.clone()),
+            _ => out.push(vec![line.clone()]),
+        }
+    }
+    out
+}
+
+fn join_lines(group: &[TextLine]) -> String {
+    let mut text = String::new();
+    for line in group {
+        let piece = line.text.trim();
+        if piece.is_empty() {
+            continue;
+        }
+        text = if text.is_empty() { piece.to_string() } else { join(&text, piece) };
+    }
+    text
+}
+
 /// 把抽出來的純文字整理成 Markdown。純函式，方便單獨測試。
+///
+/// 這是沒有 MuPDF 時的退路，只有行寬可以參考，準確度較低。
 pub fn render(text: &str) -> String {
     let lines: Vec<&str> = text
         .lines()
@@ -228,5 +327,64 @@ mod tests {
     fn empty_input_yields_empty_output() {
         assert_eq!(render(""), "");
         assert_eq!(render("   \n  \n"), "");
+    }
+
+    // ---- 帶字級的路徑 ----
+
+    fn line(text: &str, size: f64, block: usize) -> TextLine {
+        TextLine { text: text.into(), size, x: 60.0, y: 0.0, block }
+    }
+
+    fn doc() -> Vec<TextLine> {
+        vec![
+            line("專案進度報告", 24.0, 1),
+            line("第一章　背景說明", 16.0, 2),
+            line("本專案自去年啟動，目標是建立一套完全在本機執行的文件處理工具。", 10.5, 3),
+            line("過去一年間，團隊完成了核心架構的驗證。", 10.5, 3),
+            line("1. 隱私：檔案不得離開使用者的裝置", 10.5, 4),
+            line("第二章　目前進度", 16.0, 5),
+            line("壓縮功能已完成並通過實測。", 10.5, 6),
+        ]
+    }
+
+    /// 字級直接給出層級，不必再靠行寬猜。
+    #[test]
+    fn heading_levels_come_from_font_size() {
+        let md = render_structured(&doc());
+        assert!(md.contains("# 專案進度報告"), "最大字級應為 h1：\n{md}");
+        assert!(md.contains("## 第一章　背景說明"), "次大字級應為 h2：\n{md}");
+        assert!(md.contains("## 第二章　目前進度"), "同字級應為同層級：\n{md}");
+        assert!(!md.contains("# 壓縮功能"), "內文不該變標題：\n{md}");
+    }
+
+    /// 區塊編號就是段落邊界，同一區塊的行要接起來。
+    #[test]
+    fn lines_in_one_block_become_one_paragraph() {
+        let md = render_structured(&doc());
+        assert!(
+            md.contains("文件處理工具。過去一年間"),
+            "同區塊的兩行應該接成一段：\n{md}"
+        );
+    }
+
+    #[test]
+    fn structured_path_still_detects_lists() {
+        let md = render_structured(&doc());
+        assert!(md.contains("- 隱私：檔案不得離開使用者的裝置"), "\n{md}");
+    }
+
+    /// 整份文件字級一致時不該冒出任何標題。
+    #[test]
+    fn uniform_font_size_produces_no_headings() {
+        let flat: Vec<TextLine> = (1..=5)
+            .map(|i| line(&format!("第 {i} 段內容"), 12.0, i))
+            .collect();
+        let md = render_structured(&flat);
+        assert!(!md.contains('#'), "沒有字級差異就不該有標題：\n{md}");
+    }
+
+    #[test]
+    fn structured_empty_input() {
+        assert_eq!(render_structured(&[]), "");
     }
 }
