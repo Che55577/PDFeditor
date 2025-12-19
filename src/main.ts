@@ -7,23 +7,9 @@ import { Editor, type CanvasPoint } from "./editor";
 import { extractLines } from "./mupdf-text";
 
 type Tool =
-  | "compress"
-  | "merge"
-  | "extract"
-  | "remove"
-  | "rotate"
-  | "crop"
-  | "split"
-  | "toimage"
-  | "imagestopdf"
-  | "repair"
-  | "watermark"
-  | "pagenumbers"
-  | "officetopdf"
-  | "tomarkdown"
-  | "stamp"
-  | "annotate";
-type Level = "extreme" | "recommended" | "low";
+  | "compress" | "merge" | "extract" | "remove" | "rotate" | "crop" | "split"
+  | "toimage" | "imagestopdf" | "repair" | "watermark" | "pagenumbers"
+  | "stamp" | "officetopdf" | "tomarkdown" | "annotate";
 
 interface FileInfo {
   path: string;
@@ -41,9 +27,58 @@ interface JobResult {
   error: string | null;
 }
 
+interface ToolSpec {
+  id: Tool;
+  label: string;
+  hint: string;
+  /** 後端的排序位置，UI 依此排列設定面板，讓畫面順序與實際執行順序一致 */
+  order: number;
+  /** 這個工具吃什麼副檔名；未指定代表 PDF */
+  accepts?: { name: string; extensions: string[] };
+  /** 不能和其他功能一起執行 */
+  exclusive?: boolean;
+  /** 產出非 PDF，後面不能再接東西 */
+  terminal?: boolean;
+}
+
+const OFFICE_EXTS = [
+  "doc", "docx", "rtf", "odt", "txt",
+  "xls", "xlsx", "ods", "csv",
+  "ppt", "pptx", "odp",
+];
+
+/** 順序刻意與 Rust 的 Operation::order 一致。 */
+const TOOLS: ToolSpec[] = [
+  { id: "officetopdf", label: "Office 轉 PDF", hint: "Word / Excel / PPT", order: 0,
+    accepts: { name: "Office 文件", extensions: OFFICE_EXTS } },
+  { id: "imagestopdf", label: "圖片轉 PDF", hint: "JPG / PNG 併成一份", order: 0,
+    accepts: { name: "圖片", extensions: ["jpg", "jpeg", "png"] } },
+  { id: "repair", label: "修復", hint: "重建損毀的檔案", order: 1 },
+  { id: "merge", label: "合併", hint: "多份併成一份", order: 2 },
+  { id: "extract", label: "擷取頁面", hint: "只保留指定頁", order: 3 },
+  { id: "remove", label: "移除頁面", hint: "刪掉指定頁", order: 3 },
+  { id: "rotate", label: "旋轉", hint: "90 / 180 / 270 度", order: 4 },
+  { id: "crop", label: "裁切", hint: "縮減頁面邊界", order: 5 },
+  { id: "watermark", label: "浮水印", hint: "斜向文字", order: 6 },
+  { id: "pagenumbers", label: "頁碼", hint: "自動編號", order: 7 },
+  { id: "stamp", label: "圖章", hint: "簽名檔、公司章", order: 8 },
+  { id: "compress", label: "壓縮", hint: "縮小檔案大小", order: 9 },
+  { id: "split", label: "分割", hint: "每 N 頁一個檔", order: 10 },
+  { id: "toimage", label: "轉成圖片", hint: "每頁一張 JPG / PNG", order: 11, terminal: true },
+  { id: "tomarkdown", label: "轉成 Markdown", hint: "抽出文字與結構", order: 11, terminal: true },
+  { id: "annotate", label: "註記", hint: "互動式編輯器", order: 99, exclusive: true },
+];
+
+const spec = (id: Tool) => TOOLS.find((t) => t.id === id)!;
+const PDF_ONLY = { name: "PDF", extensions: ["pdf"] };
+
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const num = (id: string) => Number($<HTMLInputElement>(id).value);
+/** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
+const MM_TO_PT = 72 / 25.4;
 
 const dropEl = $<HTMLElement>("drop");
+const filesEl = $<HTMLUListElement>("files");
 const listEl = $<HTMLUListElement>("list");
 const statusEl = $<HTMLElement>("status");
 const engineEl = $<HTMLElement>("engine");
@@ -52,65 +87,15 @@ const runBtn = $<HTMLButtonElement>("run");
 const saveAllBtn = $<HTMLButtonElement>("saveAll");
 const clearBtn = $<HTMLButtonElement>("clear");
 
-let tool: Tool = "compress";
-/** 已載入、待處理的檔案。只留路徑與中繼資料，內容不進前端記憶體。 */
+/** 已勾選的功能。 */
+const selected = new Set<Tool>();
+/** 待處理的檔案。只存路徑與中繼資料，內容不進前端記憶體。 */
 let files: FileInfo[] = [];
-/** 已完成、尚未存檔的結果。每一筆在後端都對應一個暫存檔。 */
+/** 已完成、尚未存檔的結果。 */
 let results: JobResult[] = [];
 let busy = false;
-
-const LABEL: Record<Tool, string> = {
-  compress: "壓縮",
-  merge: "合併",
-  extract: "擷取頁面",
-  remove: "移除頁面",
-  rotate: "旋轉",
-  crop: "裁切",
-  split: "分割",
-  toimage: "轉成圖片",
-  imagestopdf: "轉成 PDF",
-  repair: "修復",
-  watermark: "加浮水印",
-  pagenumbers: "加頁碼",
-  officetopdf: "轉成 PDF",
-  tomarkdown: "轉成 Markdown",
-  stamp: "蓋圖章",
-  annotate: "開啟編輯器",
-};
-
 /** 圖章的圖片檔另外選，不進批次清單。 */
 let stampImage: string | null = null;
-
-const OFFICE_EXTS = [
-  "doc", "docx", "rtf", "odt", "txt",
-  "xls", "xlsx", "ods", "csv",
-  "ppt", "pptx", "odp",
-];
-
-/** 每個工具吃什麼檔案。只有 JPG 轉 PDF 收圖片。 */
-const ACCEPTS: Record<Tool, { name: string; extensions: string[] }> = {
-  imagestopdf: { name: "圖片", extensions: ["jpg", "jpeg", "png"] },
-  compress: { name: "PDF", extensions: ["pdf"] },
-  merge: { name: "PDF", extensions: ["pdf"] },
-  extract: { name: "PDF", extensions: ["pdf"] },
-  remove: { name: "PDF", extensions: ["pdf"] },
-  rotate: { name: "PDF", extensions: ["pdf"] },
-  crop: { name: "PDF", extensions: ["pdf"] },
-  split: { name: "PDF", extensions: ["pdf"] },
-  toimage: { name: "PDF", extensions: ["pdf"] },
-  repair: { name: "PDF", extensions: ["pdf"] },
-  watermark: { name: "PDF", extensions: ["pdf"] },
-  pagenumbers: { name: "PDF", extensions: ["pdf"] },
-  officetopdf: { name: "Office 文件", extensions: OFFICE_EXTS },
-  tomarkdown: { name: "PDF", extensions: ["pdf"] },
-  stamp: { name: "PDF", extensions: ["pdf"] },
-  annotate: { name: "PDF", extensions: ["pdf"] },
-};
-
-/** 公釐轉 PDF 的點（1 pt = 1/72 吋）。 */
-const MM_TO_PT = 72 / 25.4;
-
-const num = (id: string) => Number($<HTMLInputElement>(id).value);
 
 const fmt = (n: number) =>
   n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -118,6 +103,154 @@ const fmt = (n: number) =>
 function setStatus(text: string) {
   statusEl.textContent = text;
 }
+
+/** 目前接受的檔案類型：入口轉換工具說了算，否則就是 PDF。 */
+function accepting(): { name: string; extensions: string[] } {
+  for (const id of selected) {
+    const s = spec(id);
+    if (s.accepts) return s.accepts;
+  }
+  return PDF_ONLY;
+}
+
+const accepted = (path: string) =>
+  accepting().extensions.some((e) => path.toLowerCase().endsWith(`.${e}`));
+
+/** 依執行順序列出已勾選的功能。 */
+const orderedSelection = (): ToolSpec[] =>
+  TOOLS.filter((t) => selected.has(t.id)).sort((a, b) => a.order - b.order);
+
+// ---- 檔案清單 ----
+
+async function addFiles(paths: string[]) {
+  const keep = paths.filter(accepted);
+  const skipped = paths.length - keep.length;
+  const fresh = keep.filter((p) => !files.some((f) => f.path === p));
+  if (fresh.length) {
+    files = [...files, ...(await invoke<FileInfo[]>("inspect", { paths: fresh }))];
+  }
+  render();
+  if (skipped > 0) {
+    setStatus(`已略過 ${skipped} 個檔案：目前只接受 ${accepting().name}`);
+  }
+}
+
+function move(index: number, delta: number) {
+  const to = index + delta;
+  if (to < 0 || to >= files.length) return;
+  [files[index], files[to]] = [files[to], files[index]];
+  render();
+}
+
+function renderFiles() {
+  filesEl.innerHTML = "";
+  // 合併與圖片轉 PDF 的輸出順序就是這個清單的順序，所以需要調序按鈕。
+  const ordered = selected.has("merge") || selected.has("imagestopdf");
+
+  files.forEach((f, i) => {
+    const li = document.createElement("li");
+    li.className = f.error ? "filecard bad" : "filecard";
+
+    const info = document.createElement("div");
+    info.className = "fileinfo";
+    const name = document.createElement("span");
+    name.className = "filename";
+    name.textContent = f.name;
+    name.title = f.path;
+    const meta = document.createElement("span");
+    meta.className = f.error ? "filemeta error" : "filemeta";
+    meta.textContent =
+      f.error ?? (f.pages === null ? fmt(f.bytes) : `${fmt(f.bytes)}　·　${f.pages} 頁`);
+    info.append(name, meta);
+    li.append(info);
+
+    if (ordered && !f.error) {
+      for (const [glyph, delta] of [["↑", -1], ["↓", 1]] as const) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ghost tiny";
+        b.textContent = glyph;
+        b.disabled = delta < 0 ? i === 0 : i === files.length - 1;
+        b.onclick = () => move(i, delta);
+        li.append(b);
+      }
+    }
+
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "ghost tiny";
+    drop.textContent = "✕";
+    drop.title = "從清單移除";
+    drop.onclick = () => {
+      files = files.filter((x) => x.path !== f.path);
+      render();
+    };
+    li.append(drop);
+    filesEl.append(li);
+  });
+}
+
+// ---- 功能勾選 ----
+
+function buildToolCards() {
+  toolsEl.innerHTML = "";
+  for (const t of TOOLS) {
+    const label = document.createElement("label");
+    label.className = "toolcard";
+    label.dataset.tool = t.id;
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = selected.has(t.id);
+    box.onchange = () => toggle(t.id, box.checked);
+
+    const text = document.createElement("span");
+    text.className = "tooltext";
+    const name = document.createElement("strong");
+    name.textContent = t.label;
+    const hint = document.createElement("em");
+    hint.textContent = t.hint;
+    text.append(name, hint);
+
+    label.append(box, text);
+    toolsEl.append(label);
+  }
+}
+
+function toggle(id: Tool, on: boolean) {
+  const s = spec(id);
+  if (on) {
+    // 註記是互動式的，不能和批次功能混用；反之亦然。
+    if (s.exclusive) selected.clear();
+    else for (const other of [...selected]) if (spec(other).exclusive) selected.delete(other);
+
+    // 入口轉換工具彼此互斥，因為它們吃的來源格式不同。
+    if (s.accepts) for (const other of [...selected]) if (spec(other).accepts) selected.delete(other);
+    // 終點工具彼此互斥，它們都產生非 PDF 的輸出。
+    if (s.terminal) for (const other of [...selected]) if (spec(other).terminal) selected.delete(other);
+    // 擷取與移除是互斥的兩種說法
+    if (id === "extract") selected.delete("remove");
+    if (id === "remove") selected.delete("extract");
+    if (s.terminal) selected.delete("split");
+    if (id === "split") for (const other of [...selected]) if (spec(other).terminal) selected.delete(other);
+
+    selected.add(id);
+  } else {
+    selected.delete(id);
+  }
+
+  // 換了功能之後，原本載入的檔案類型可能不再適用
+  const before = files.length;
+  files = files.filter((f) => accepted(f.path));
+  if (files.length < before) {
+    setStatus(`已移除 ${before - files.length} 個檔案：目前只接受 ${accepting().name}`);
+  } else {
+    setStatus("");
+  }
+  render();
+}
+
+// ---- 參數組裝 ----
 
 /**
  * 解析 "1-3, 7, 10-12" 這類頁碼字串。
@@ -145,139 +278,6 @@ function parsePages(spec: string, max: number): number[] {
   return [...out].sort((a, b) => a - b);
 }
 
-/** 組出要送給後端的操作描述。輸入不合法時丟出錯誤，由呼叫端顯示。 */
-function buildOperation(): object {
-  const minPages = Math.min(...files.map((f) => f.pages ?? 0));
-  switch (tool) {
-    case "compress": {
-      const level = document.querySelector<HTMLInputElement>('input[name="level"]:checked')!
-        .value as Level;
-      return { kind: "compress", level };
-    }
-    case "merge":
-      return { kind: "merge" };
-    case "extract": {
-      const spec = $<HTMLInputElement>("extractPages").value.trim();
-      if (!spec) throw new Error("請輸入要保留的頁碼");
-      return { kind: "extract", pages: parsePages(spec, minPages) };
-    }
-    case "remove": {
-      const spec = $<HTMLInputElement>("removePages").value.trim();
-      if (!spec) throw new Error("請輸入要移除的頁碼");
-      return { kind: "remove", pages: parsePages(spec, minPages) };
-    }
-    case "rotate": {
-      const spec = $<HTMLInputElement>("rotatePages").value.trim();
-      const degrees = Number(
-        document.querySelector<HTMLInputElement>('input[name="angle"]:checked')!.value,
-      );
-      return { kind: "rotate", pages: spec ? parsePages(spec, minPages) : [], degrees };
-    }
-    case "crop": {
-      const spec = $<HTMLInputElement>("cropPages").value.trim();
-      const mm = {
-        top: num("cropTop"),
-        bottom: num("cropBottom"),
-        left: num("cropLeft"),
-        right: num("cropRight"),
-      };
-      if (Object.values(mm).some((v) => !Number.isFinite(v) || v < 0)) {
-        throw new Error("邊界必須是 0 或正數");
-      }
-      if (Object.values(mm).every((v) => v === 0)) throw new Error("請至少設定一邊的裁切量");
-      return {
-        kind: "crop",
-        pages: spec ? parsePages(spec, minPages) : [],
-        margins: {
-          top: mm.top * MM_TO_PT,
-          bottom: mm.bottom * MM_TO_PT,
-          left: mm.left * MM_TO_PT,
-          right: mm.right * MM_TO_PT,
-        },
-      };
-    }
-    case "split": {
-      const chunk = num("splitChunk");
-      if (!Number.isInteger(chunk) || chunk < 1) throw new Error("每份頁數必須是 1 以上的整數");
-      return { kind: "split", chunk };
-    }
-    case "toimage": {
-      const dpi = num("imageDpi");
-      if (!Number.isInteger(dpi) || dpi < 20 || dpi > 600) {
-        throw new Error("解析度請設在 20 到 600 DPI 之間");
-      }
-      const format = document.querySelector<HTMLInputElement>('input[name="imgfmt"]:checked')!
-        .value;
-      return { kind: "toImage", dpi, format };
-    }
-    case "imagestopdf": {
-      const mm = num("imgMargin");
-      if (!Number.isFinite(mm) || mm < 0) throw new Error("留白必須是 0 或正數");
-      return { kind: "imagesToPdf", margin: mm * MM_TO_PT };
-    }
-    case "repair":
-      return { kind: "repair" };
-    case "officetopdf":
-      return { kind: "officeToPdf" };
-    case "tomarkdown":
-      return { kind: "toMarkdown" };
-    case "annotate":
-      // 編輯器不走 run_op，這個分支只是為了讓型別完整
-      return { kind: "annotate" };
-    case "stamp": {
-      if (!stampImage) throw new Error("請先選擇圖章圖片");
-      const width = num("stampWidth");
-      const margin = num("stampMargin");
-      const opacity = num("stampOpacity");
-      if (!Number.isFinite(width) || width < 1) throw new Error("圖章寬度必須大於 0");
-      if (!Number.isFinite(margin) || margin < 0) throw new Error("邊界必須是 0 或正數");
-      if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
-        throw new Error("透明度必須介於 0 與 1 之間");
-      }
-      const spec = $<HTMLInputElement>("stampPages").value.trim();
-      return {
-        kind: "stamp",
-        image: stampImage,
-        place: {
-          corner: $<HTMLSelectElement>("stampCorner").value,
-          margin: margin * MM_TO_PT,
-          width: width * MM_TO_PT,
-          opacity,
-        },
-        pages: spec ? parsePages(spec, minPages) : [],
-      };
-    }
-    case "watermark": {
-      const text = $<HTMLInputElement>("wmText").value.trim();
-      if (!text) throw new Error("請輸入浮水印文字");
-      const spec = $<HTMLInputElement>("wmPages").value.trim();
-      return {
-        kind: "watermark",
-        text,
-        style: styleFrom("wmFont", "wmSize", "wmColor", num("wmOpacity")),
-        angle: num("wmAngle"),
-        pages: spec ? parsePages(spec, minPages) : [],
-      };
-    }
-    case "pagenumbers": {
-      const template = $<HTMLInputElement>("pnTemplate").value.trim();
-      if (!template) throw new Error("請輸入頁碼格式");
-      const margin = num("pnMargin");
-      if (!Number.isFinite(margin) || margin < 0) throw new Error("邊界必須是 0 或正數");
-      const spec = $<HTMLInputElement>("pnPages").value.trim();
-      return {
-        kind: "pageNumbers",
-        template,
-        style: styleFrom("pnFont", "pnSize", "pnColor", 1),
-        corner: $<HTMLSelectElement>("pnCorner").value,
-        start_at: num("pnStart"),
-        margin: margin * MM_TO_PT,
-        pages: spec ? parsePages(spec, minPages) : [],
-      };
-    }
-  }
-}
-
 /** `#rrggbb` → PDF 用的 0–1 三分量。 */
 function hexToRgb(hex: string): [number, number, number] {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
@@ -301,127 +301,132 @@ function styleFrom(fontSel: string, sizeId: string, colorId: string, opacity: nu
   };
 }
 
-const accepted = (path: string) =>
-  ACCEPTS[tool].extensions.some((e) => path.toLowerCase().endsWith(`.${e}`));
+const pagesOf = (id: string, max: number) => {
+  const raw = $<HTMLInputElement>(id).value.trim();
+  return raw ? parsePages(raw, max) : [];
+};
 
-async function addFiles(paths: string[]) {
-  const keep = paths.filter(accepted);
-  const skipped = paths.length - keep.length;
-  const fresh = keep.filter((p) => !files.some((f) => f.path === p));
-  if (fresh.length) {
-    files = [...files, ...(await invoke<FileInfo[]>("inspect", { paths: fresh }))];
-  }
-  render();
-  if (skipped > 0) {
-    setStatus(`已略過 ${skipped} 個檔案：「${LABEL[tool]}」只接受 ${ACCEPTS[tool].name}`);
-  }
-}
-
-function move(index: number, delta: number) {
-  const to = index + delta;
-  if (to < 0 || to >= files.length) return;
-  [files[index], files[to]] = [files[to], files[index]];
-  render();
-}
-
-function renderPending() {
-  files.forEach((f, i) => {
-    const li = document.createElement("li");
-    li.className = f.error ? "item failed" : "item pending";
-
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = f.name;
-
-    const meta = document.createElement("span");
-    meta.className = f.error ? "meta error" : "meta";
-    // 圖片沒有頁數可言。
-    meta.textContent =
-      f.error ?? (f.pages === null ? fmt(f.bytes) : `${fmt(f.bytes)}　${f.pages} 頁`);
-    li.append(name, meta);
-
-    // 這兩個工具的輸出順序就是清單順序，所以需要調序。
-    if ((tool === "merge" || tool === "imagestopdf") && !f.error) {
-      for (const [glyph, delta] of [["↑", -1], ["↓", 1]] as const) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "ghost tiny";
-        b.textContent = glyph;
-        b.disabled = delta < 0 ? i === 0 : i === files.length - 1;
-        b.onclick = () => move(i, delta);
-        li.append(b);
+/** 把一個已勾選的功能轉成後端的 Operation。 */
+function operationFor(id: Tool, minPages: number): object {
+  switch (id) {
+    case "compress": {
+      const level = document.querySelector<HTMLInputElement>('input[name="level"]:checked')!.value;
+      return { kind: "compress", level };
+    }
+    case "merge":
+      return { kind: "merge" };
+    case "extract": {
+      const raw = $<HTMLInputElement>("extractPages").value.trim();
+      if (!raw) throw new Error("「擷取頁面」需要指定保留哪些頁");
+      return { kind: "extract", pages: parsePages(raw, minPages) };
+    }
+    case "remove": {
+      const raw = $<HTMLInputElement>("removePages").value.trim();
+      if (!raw) throw new Error("「移除頁面」需要指定移除哪些頁");
+      return { kind: "remove", pages: parsePages(raw, minPages) };
+    }
+    case "rotate": {
+      const degrees = Number(
+        document.querySelector<HTMLInputElement>('input[name="angle"]:checked')!.value,
+      );
+      return { kind: "rotate", pages: pagesOf("rotatePages", minPages), degrees };
+    }
+    case "crop": {
+      const mm = {
+        top: num("cropTop"), bottom: num("cropBottom"),
+        left: num("cropLeft"), right: num("cropRight"),
+      };
+      if (Object.values(mm).some((v) => !Number.isFinite(v) || v < 0)) {
+        throw new Error("裁切邊界必須是 0 或正數");
       }
+      if (Object.values(mm).every((v) => v === 0)) throw new Error("「裁切」請至少設定一邊的裁切量");
+      return {
+        kind: "crop",
+        pages: pagesOf("cropPages", minPages),
+        margins: {
+          top: mm.top * MM_TO_PT, bottom: mm.bottom * MM_TO_PT,
+          left: mm.left * MM_TO_PT, right: mm.right * MM_TO_PT,
+        },
+      };
     }
-
-    const drop = document.createElement("button");
-    drop.type = "button";
-    drop.className = "ghost tiny";
-    drop.textContent = "✕";
-    drop.title = "從清單移除";
-    drop.onclick = () => {
-      files = files.filter((x) => x.path !== f.path);
-      render();
-    };
-    li.append(drop);
-    listEl.append(li);
-  });
-}
-
-function renderResults() {
-  for (const r of results) {
-    const li = document.createElement("li");
-    li.className = r.error ? "item failed" : "item done";
-
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = r.name;
-    li.append(name);
-
-    if (r.error) {
-      const meta = document.createElement("span");
-      meta.className = "meta error";
-      meta.textContent = r.error;
-      li.append(meta);
-    } else {
-      const saved = 1 - r.out_bytes / Math.max(1, r.orig_bytes);
-      const meta = document.createElement("span");
-      meta.className = "meta";
-      // 壓縮才需要強調省了多少；其他工具改大小不是重點。
-      meta.innerHTML =
-        saved > 0.01
-          ? `<s>${fmt(r.orig_bytes)}</s> → <b>${fmt(r.out_bytes)}</b>` +
-            `<i class="good">省下 ${(saved * 100).toFixed(0)}%</i>`
-          : `<span class="flat">${fmt(r.orig_bytes)} → ${fmt(r.out_bytes)}</span>`;
-
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = "儲存…";
-      btn.onclick = () => saveOne(r);
-      li.append(meta, btn);
+    case "split": {
+      const chunk = num("splitChunk");
+      if (!Number.isInteger(chunk) || chunk < 1) throw new Error("每份頁數必須是 1 以上的整數");
+      return { kind: "split", chunk };
     }
-    listEl.append(li);
+    case "toimage": {
+      const dpi = num("imageDpi");
+      if (!Number.isInteger(dpi) || dpi < 20 || dpi > 600) {
+        throw new Error("解析度請設在 20 到 600 DPI 之間");
+      }
+      const format = document.querySelector<HTMLInputElement>('input[name="imgfmt"]:checked')!.value;
+      return { kind: "toImage", dpi, format };
+    }
+    case "imagestopdf": {
+      const mm = num("imgMargin");
+      if (!Number.isFinite(mm) || mm < 0) throw new Error("留白必須是 0 或正數");
+      return { kind: "imagesToPdf", margin: mm * MM_TO_PT };
+    }
+    case "repair":
+      return { kind: "repair" };
+    case "watermark": {
+      const text = $<HTMLInputElement>("wmText").value.trim();
+      if (!text) throw new Error("請輸入浮水印文字");
+      return {
+        kind: "watermark",
+        text,
+        style: styleFrom("wmFont", "wmSize", "wmColor", num("wmOpacity")),
+        angle: num("wmAngle"),
+        pages: pagesOf("wmPages", minPages),
+      };
+    }
+    case "pagenumbers": {
+      const template = $<HTMLInputElement>("pnTemplate").value.trim();
+      if (!template) throw new Error("請輸入頁碼格式");
+      const margin = num("pnMargin");
+      if (!Number.isFinite(margin) || margin < 0) throw new Error("頁碼邊界必須是 0 或正數");
+      return {
+        kind: "pageNumbers",
+        template,
+        style: styleFrom("pnFont", "pnSize", "pnColor", 1),
+        corner: $<HTMLSelectElement>("pnCorner").value,
+        start_at: num("pnStart"),
+        margin: margin * MM_TO_PT,
+        pages: pagesOf("pnPages", minPages),
+      };
+    }
+    case "stamp": {
+      if (!stampImage) throw new Error("請先選擇圖章圖片");
+      const width = num("stampWidth");
+      const margin = num("stampMargin");
+      const opacity = num("stampOpacity");
+      if (!Number.isFinite(width) || width < 1) throw new Error("圖章寬度必須大於 0");
+      if (!Number.isFinite(margin) || margin < 0) throw new Error("圖章邊界必須是 0 或正數");
+      if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+        throw new Error("圖章透明度必須介於 0 與 1 之間");
+      }
+      return {
+        kind: "stamp",
+        image: stampImage,
+        place: {
+          corner: $<HTMLSelectElement>("stampCorner").value,
+          margin: margin * MM_TO_PT,
+          width: width * MM_TO_PT,
+          opacity,
+        },
+        pages: pagesOf("stampPages", minPages),
+      };
+    }
+    case "officetopdf":
+      return { kind: "officeToPdf" };
+    case "tomarkdown":
+      return { kind: "toMarkdown" };
+    case "annotate":
+      throw new Error("註記是互動式的，不走批次流程");
   }
 }
 
-function render() {
-  listEl.innerHTML = "";
-  renderPending();
-  renderResults();
-
-  for (const el of document.querySelectorAll<HTMLElement>("[data-for]")) {
-    el.hidden = el.dataset.for !== tool;
-  }
-  for (const b of toolsEl.querySelectorAll<HTMLButtonElement>("button")) {
-    b.classList.toggle("active", b.dataset.tool === tool);
-  }
-
-  const usable = files.filter((f) => !f.error).length;
-  runBtn.disabled =
-    busy || usable === 0 || (tool === "merge" && usable < 2) || (tool === "annotate" && !!editor);
-  runBtn.textContent = busy ? "處理中…" : LABEL[tool];
-  saveAllBtn.hidden = !results.some((r) => !r.error);
-  clearBtn.hidden = results.length === 0 && files.length === 0;
-}
+// ---- 執行 ----
 
 /**
  * Markdown 走的路和其他工具不同：檔案內容讀進 WebView，交給 MuPDF 抽出**帶字級**的
@@ -443,14 +448,175 @@ async function runMarkdown(paths: string[]): Promise<JobResult[]> {
       const detail = e instanceof Error ? e.message : String(e);
       setStatus(`${name}：改用備援方式抽取（${detail}）`);
       out.push(
-        ...(await invoke<JobResult[]>("run_op", {
-          paths: [path],
-          op: { kind: "toMarkdown" },
-        })),
+        ...(await invoke<JobResult[]>("run_op", { paths: [path], op: { kind: "toMarkdown" } })),
       );
     }
   }
   return out;
+}
+
+async function runAll() {
+  if (busy || files.length === 0 || selected.size === 0) return;
+  const chosen = orderedSelection();
+  const usable = files.filter((f) => !f.error).map((f) => f.path);
+  if (usable.length === 0) return;
+
+  if (chosen.some((t) => t.id === "annotate")) {
+    busy = true;
+    render();
+    try {
+      await edOpen(usable[0]);
+      files = [];
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    } finally {
+      busy = false;
+      render();
+    }
+    return;
+  }
+
+  const minPages = Math.min(...files.map((f) => f.pages ?? Number.MAX_SAFE_INTEGER));
+  let ops: object[];
+  try {
+    ops = chosen.map((t) => operationFor(t.id, minPages));
+  } catch (e) {
+    setStatus(e instanceof Error ? e.message : String(e));
+    return;
+  }
+
+  busy = true;
+  render();
+  try {
+    // Markdown 需要 MuPDF 才有字級，所以單獨走前端那條路。
+    const out =
+      chosen.length === 1 && chosen[0].id === "tomarkdown"
+        ? await runMarkdown(usable)
+        : await invoke<JobResult[]>("run_pipeline", { paths: usable, ops });
+    results = [...results, ...out];
+    files = [];
+    setStatus(`完成 ${out.length} 個輸出。尚未儲存的結果只存在暫存區。`);
+  } catch (e) {
+    setStatus(e instanceof Error ? e.message : String(e));
+  } finally {
+    busy = false;
+    render();
+  }
+}
+
+// ---- 結果與儲存 ----
+
+function saveFilters(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "pdf";
+  const known: Record<string, { name: string; extensions: string[] }> = {
+    jpg: { name: "JPEG 圖片", extensions: ["jpg"] },
+    png: { name: "PNG 圖片", extensions: ["png"] },
+    md: { name: "Markdown", extensions: ["md"] },
+  };
+  return [known[ext] ?? PDF_ONLY];
+}
+
+async function saveOne(r: JobResult) {
+  const dest = await save({ defaultPath: r.name, filters: saveFilters(r.name) });
+  if (!dest) return;
+  try {
+    await invoke("save_job", { id: r.id, dest });
+    results = results.filter((x) => x.id !== r.id);
+    setStatus(`已儲存，暫存檔已抹除：${dest}`);
+  } catch (e) {
+    setStatus(String(e));
+  }
+  render();
+}
+
+async function saveAll() {
+  const dir = await open({ directory: true, multiple: false, title: "選擇儲存資料夾" });
+  if (typeof dir !== "string") return;
+  let saved = 0;
+  for (const r of results.filter((x) => !x.error)) {
+    try {
+      await invoke("save_job", { id: r.id, dest: `${dir}\\${r.name}` });
+      results = results.filter((x) => x.id !== r.id);
+      saved++;
+    } catch (e) {
+      setStatus(String(e));
+    }
+  }
+  setStatus(`已儲存 ${saved} 個檔案到 ${dir}，暫存檔已全部抹除。`);
+  render();
+}
+
+function renderResults() {
+  listEl.innerHTML = "";
+  for (const r of results) {
+    const li = document.createElement("li");
+    li.className = r.error ? "item failed" : "item done";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = r.name;
+    li.append(name);
+
+    if (r.error) {
+      const meta = document.createElement("span");
+      meta.className = "meta error";
+      meta.textContent = r.error;
+      li.append(meta);
+    } else {
+      const saved = 1 - r.out_bytes / Math.max(1, r.orig_bytes);
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.innerHTML =
+        r.orig_bytes > 0 && saved > 0.01
+          ? `<s>${fmt(r.orig_bytes)}</s> → <b>${fmt(r.out_bytes)}</b>` +
+            `<i class="good">省下 ${(saved * 100).toFixed(0)}%</i>`
+          : `<span class="flat">${fmt(r.out_bytes)}</span>`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "儲存…";
+      btn.onclick = () => saveOne(r);
+      li.append(meta, btn);
+    }
+    listEl.append(li);
+  }
+}
+
+function render() {
+  renderFiles();
+  renderResults();
+
+  for (const el of document.querySelectorAll<HTMLElement>("[data-for]")) {
+    const id = el.dataset.for as Tool;
+    el.hidden = !selected.has(id);
+    // 設定面板依實際執行順序排列，畫面看到的順序就是處理的順序。
+    el.style.order = String(spec(id).order);
+  }
+  for (const card of toolsEl.querySelectorAll<HTMLElement>(".toolcard")) {
+    const on = selected.has(card.dataset.tool as Tool);
+    card.classList.toggle("on", on);
+    // 互斥規則會在背後取消其他選項，勾選框必須跟著回來，
+    // 否則使用者會看到兩個都打勾卻只有一個生效。
+    const box = card.querySelector<HTMLInputElement>("input")!;
+    if (box.checked !== on) box.checked = on;
+  }
+
+  const chosen = orderedSelection();
+  const usable = files.filter((f) => !f.error).length;
+  const needsTwo = selected.has("merge") && usable < 2;
+  runBtn.disabled = busy || usable === 0 || chosen.length === 0 || needsTwo || (selected.has("annotate") && !!editor);
+  runBtn.textContent = busy
+    ? "處理中…"
+    : chosen.length === 0
+      ? "請先勾選功能"
+      : selected.has("annotate")
+        ? "開啟編輯器"
+        : chosen.length === 1
+          ? chosen[0].label
+          : `依序執行 ${chosen.length} 項：${chosen.map((t) => t.label).join(" → ")}`;
+
+  $<HTMLElement>("acceptHint").textContent = `　（目前接受 ${accepting().name}）`;
+  saveAllBtn.hidden = !results.some((r) => !r.error);
+  clearBtn.hidden = results.length === 0 && files.length === 0;
+  dropEl.classList.toggle("compact", files.length > 0);
 }
 
 // ---- 註記編輯器 ----
@@ -462,13 +628,13 @@ const edEls = {
   page: $<HTMLElement>("edPage"),
   zoom: $<HTMLElement>("edZoom"),
   hint: $<HTMLElement>("edHint"),
+  mode: $<HTMLElement>("edMode"),
 };
 
 let editor: Editor | null = null;
 let edPage = 0;
 let edMode: "text" | "ink" = "text";
 let edSource = "";
-/** 手繪進行中的筆畫，pointerup 時才寫進註記。 */
 let edStrokes: CanvasPoint[][] = [];
 let edDrawing = false;
 
@@ -502,7 +668,7 @@ async function edOpen(path: string) {
   edPage = 0;
   edEls.panel.hidden = false;
   await edRender();
-  setStatus(`已開啟 ${edSource}，共 ${editor.pageCount} 頁。點一下頁面加入註記。`);
+  setStatus(`已開啟 ${edSource}，共 ${editor.pageCount} 頁。`);
   render();
 }
 
@@ -514,6 +680,16 @@ function edClose() {
   edEls.panel.hidden = true;
   edEls.input.hidden = true;
   render();
+}
+
+function edSetMode(mode: "text" | "ink") {
+  edMode = mode;
+  $<HTMLButtonElement>("edModeText").classList.toggle("active", mode === "text");
+  $<HTMLButtonElement>("edModeInk").classList.toggle("active", mode === "ink");
+  edEls.mode.textContent =
+    mode === "text"
+      ? "文字模式：點一下頁面任意處，輸入文字後按 Enter。"
+      : "手繪模式：在頁面上按住拖曳。放開時筆跡才會寫入，畫面會重畫一次。";
 }
 
 /** 在點擊處浮出輸入框，Enter 送出、Esc 取消。 */
@@ -535,8 +711,9 @@ function edPromptText(at: CanvasPoint, clientX: number, clientY: number) {
     try {
       editor.addText(at, input.value, { size: edSize(), color: edColor() });
       await edRender();
+      setStatus("已加入文字註記。");
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setStatus(`加入文字失敗：${e instanceof Error ? e.message : String(e)}`);
     }
   };
   input.onkeydown = (ev) => {
@@ -544,6 +721,23 @@ function edPromptText(at: CanvasPoint, clientX: number, clientY: number) {
     else if (ev.key === "Escape") void finish(false);
   };
   input.onblur = () => void finish(false);
+}
+
+/** 把目前累積的筆跡寫成註記。失敗一定要說出來，不能靜默丟掉。 */
+async function edCommitInk() {
+  if (!edDrawing || !editor) return;
+  edDrawing = false;
+  const strokes = edStrokes;
+  edStrokes = [];
+  if (strokes.length === 0) return;
+  try {
+    editor.addInk(strokes, { width: Math.max(1, edSize() / 8), color: edColor() });
+    await edRender();
+    setStatus(`已加入手繪筆跡（${strokes[0].length} 個點）。`);
+  } catch (e) {
+    setStatus(`手繪寫入失敗：${e instanceof Error ? e.message : String(e)}`);
+    await edRender();
+  }
 }
 
 edEls.canvas.onpointerdown = (e) => {
@@ -555,22 +749,26 @@ edEls.canvas.onpointerdown = (e) => {
   }
   edDrawing = true;
   edStrokes = [[p]];
-  edEls.canvas.setPointerCapture(e.pointerId);
+  try {
+    edEls.canvas.setPointerCapture(e.pointerId);
+  } catch {
+    // 沒有指標捕捉也能畫，只是拖出畫布外會斷；不值得因此中斷操作
+  }
 };
 
 edEls.canvas.onpointermove = (e) => {
   if (!edDrawing || !editor) return;
   const p = edPoint(e);
-  edStrokes[edStrokes.length - 1].push(p);
-  // 即時預覽；正式的筆跡在 pointerup 才寫進註記，之後重畫會取代這條線。
+  const stroke = edStrokes[edStrokes.length - 1];
+  stroke.push(p);
+  // 即時預覽；正式的筆跡在放開時才寫進註記，之後重畫會取代這條線。
   const ctx = edEls.canvas.getContext("2d");
-  if (!ctx) return;
+  if (!ctx || stroke.length < 2) return;
   const [r, g, b] = edColor();
   ctx.strokeStyle = `rgb(${r * 255} ${g * 255} ${b * 255})`;
   ctx.lineWidth = Math.max(1, edSize() / 8) * editor.scale;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  const stroke = edStrokes[edStrokes.length - 1];
   const prev = stroke[stroke.length - 2];
   ctx.beginPath();
   ctx.moveTo(prev.x, prev.y);
@@ -578,17 +776,10 @@ edEls.canvas.onpointermove = (e) => {
   ctx.stroke();
 };
 
-edEls.canvas.onpointerup = async () => {
-  if (!edDrawing || !editor) return;
-  edDrawing = false;
-  try {
-    editor.addInk(edStrokes, { width: Math.max(1, edSize() / 8), color: edColor() });
-  } catch {
-    // 只有單一個點的筆畫沒有意義，忽略
-  }
-  edStrokes = [];
-  await edRender();
-};
+// pointerup 有可能因為指標捕捉中斷而不觸發，所以另外兩個事件也要收尾。
+edEls.canvas.onpointerup = () => void edCommitInk();
+edEls.canvas.onpointercancel = () => void edCommitInk();
+edEls.canvas.onlostpointercapture = () => void edCommitInk();
 
 $<HTMLButtonElement>("edPrev").onclick = () => {
   edPage = Math.max(0, edPage - 1);
@@ -612,17 +803,10 @@ $<HTMLButtonElement>("edUndo").onclick = async () => {
     return;
   }
   await edRender();
+  setStatus("已移除最後加入的註記。");
 };
-$<HTMLButtonElement>("edModeText").onclick = () => {
-  edMode = "text";
-  $<HTMLButtonElement>("edModeText").classList.add("active");
-  $<HTMLButtonElement>("edModeInk").classList.remove("active");
-};
-$<HTMLButtonElement>("edModeInk").onclick = () => {
-  edMode = "ink";
-  $<HTMLButtonElement>("edModeInk").classList.add("active");
-  $<HTMLButtonElement>("edModeText").classList.remove("active");
-};
+$<HTMLButtonElement>("edModeText").onclick = () => edSetMode("text");
+$<HTMLButtonElement>("edModeInk").onclick = () => edSetMode("ink");
 $<HTMLButtonElement>("edClose").onclick = () => {
   edClose();
   setStatus("已關閉編輯器，未儲存的變更已丟棄。");
@@ -641,126 +825,27 @@ $<HTMLButtonElement>("edSave").onclick = async () => {
     results = [...results, result];
     edClose();
     setStatus("已產生註記後的檔案，請在下方清單儲存。尚未存檔前只存在暫存區。");
-    render();
   } catch (e) {
     setStatus(e instanceof Error ? e.message : String(e));
   }
 };
 
-async function runOp() {
-  if (busy || files.length === 0) return;
-  let op: object;
-  try {
-    op = buildOperation();
-  } catch (e) {
-    setStatus(e instanceof Error ? e.message : String(e));
-    return;
-  }
+// ---- 其餘接線 ----
 
-  busy = true;
-  render();
-  const batch = files.filter((f) => !f.error).map((f) => f.path);
-
-  // 註記是互動式的，不走批次流程。
-  if (tool === "annotate") {
-    try {
-      await edOpen(batch[0]);
-      files = [];
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
-    } finally {
-      busy = false;
-      render();
-    }
-    return;
-  }
-
-  try {
-    const out =
-      tool === "tomarkdown"
-        ? await runMarkdown(batch)
-        : await invoke<JobResult[]>("run_op", { paths: batch, op });
-    results = [...results, ...out];
-    files = [];
-    const ok = out.filter((r) => !r.error).length;
-    setStatus(`完成 ${ok} / ${out.length}。尚未儲存的結果只存在暫存區。`);
-  } catch (e) {
-    setStatus(String(e));
-  } finally {
-    busy = false;
-    render();
-  }
-}
-
-/** 後端已經算好含副檔名的建議檔名，前端不再自己加後綴。 */
-function saveFilters(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase() ?? "pdf";
-  const known: Record<string, { name: string; extensions: string[] }> = {
-    jpg: { name: "JPEG 圖片", extensions: ["jpg"] },
-    png: { name: "PNG 圖片", extensions: ["png"] },
-    md: { name: "Markdown", extensions: ["md"] },
-  };
-  return [known[ext] ?? { name: "PDF", extensions: ["pdf"] }];
-}
-
-async function saveOne(r: JobResult) {
-  const dest = await save({ defaultPath: r.name, filters: saveFilters(r.name) });
-  if (!dest) return;
-  try {
-    await invoke("save_job", { id: r.id, dest });
-    results = results.filter((x) => x.id !== r.id);
-    setStatus(`已儲存，暫存檔已抹除：${dest}`);
-  } catch (e) {
-    setStatus(String(e));
-  }
-  render();
-}
-
-async function saveAll() {
-  const dir = await open({ directory: true, multiple: false, title: "選擇儲存資料夾" });
-  if (typeof dir !== "string") return;
-  let saved = 0;
-  for (const r of results.filter((x) => !x.error)) {
-    try {
-      await invoke("save_job", { id: r.id, dest: `${dir}\\${r.name}` });
-      results = results.filter((x) => x.id !== r.id);
-      saved++;
-    } catch (e) {
-      setStatus(String(e));
-    }
-  }
-  setStatus(`已儲存 ${saved} 個檔案到 ${dir}，暫存檔已全部抹除。`);
-  render();
-}
-
-async function clearAll() {
+runBtn.onclick = runAll;
+saveAllBtn.onclick = saveAll;
+clearBtn.onclick = async () => {
   await invoke("discard_all");
   files = [];
   results = [];
   setStatus("已清除所有暫存結果。");
   render();
-}
+};
 
-async function browse() {
-  const picked = await open({ multiple: true, filters: [ACCEPTS[tool]] });
+$<HTMLButtonElement>("browse").onclick = async () => {
+  const picked = await open({ multiple: true, filters: [accepting()] });
   if (Array.isArray(picked)) await addFiles(picked);
   else if (typeof picked === "string") await addFiles([picked]);
-}
-
-toolsEl.onclick = (e) => {
-  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-tool]");
-  if (!btn || busy) return;
-  tool = btn.dataset.tool as Tool;
-
-  // 換工具後檔案類型可能不再適用（例如載入 JPG 後切到「壓縮」），先剔掉不合的。
-  const before = files.length;
-  files = files.filter((f) => accepted(f.path));
-  setStatus(
-    files.length < before
-      ? `已移除 ${before - files.length} 個檔案：「${LABEL[tool]}」只接受 ${ACCEPTS[tool].name}`
-      : "",
-  );
-  render();
 };
 
 $<HTMLButtonElement>("stampPick").onclick = async () => {
@@ -774,25 +859,32 @@ $<HTMLButtonElement>("stampPick").onclick = async () => {
   render();
 };
 
-runBtn.onclick = runOp;
-saveAllBtn.onclick = saveAll;
-clearBtn.onclick = clearAll;
-$<HTMLButtonElement>("browse").onclick = browse;
+// 這兩段接的是宿主環境的 API。它們在模組頂層執行，一旦拋錯，後面所有初始化
+// （包括建立功能卡片）都不會跑，介面會變成一個沒有反應的空殼。包起來讓它安靜失敗，
+// 使用者至少還能用「選擇檔案」。
+try {
+  getCurrentWebview().onDragDropEvent((e) => {
+    if (e.payload.type === "over") {
+      dropEl.classList.add("over");
+    } else if (e.payload.type === "drop") {
+      dropEl.classList.remove("over");
+      void addFiles(e.payload.paths);
+    } else {
+      dropEl.classList.remove("over");
+    }
+  });
+} catch (e) {
+  console.warn("無法註冊拖放事件，改用「選擇檔案」：", e);
+}
 
-getCurrentWebview().onDragDropEvent((e) => {
-  if (e.payload.type === "over") {
-    dropEl.classList.add("over");
-  } else if (e.payload.type === "drop") {
-    dropEl.classList.remove("over");
-    void addFiles(e.payload.paths);
-  } else {
-    dropEl.classList.remove("over");
-  }
-});
-
-listen<{ index: number; total: number; name: string }>("op:progress", (e) => {
-  setStatus(`處理中 ${e.payload.index + 1}/${e.payload.total}：${e.payload.name}`);
-});
+try {
+  listen<{ index: number; total: number; name: string }>("op:progress", (e) => {
+    const { index, total, name } = e.payload;
+    setStatus(total > 1 ? `步驟 ${index + 1}/${total}：${name}` : `處理中：${name}`);
+  });
+} catch (e) {
+  console.warn("無法註冊進度事件：", e);
+}
 
 interface FontChoice {
   label: string;
@@ -822,14 +914,17 @@ interface Engines {
 
 async function showEngines() {
   const e = await invoke<Engines>("engine_status");
-  const parts: string[] = [];
-  parts.push(e.ghostscript ? `Ghostscript ${e.ghostscript}` : "Ghostscript 缺失（壓縮／轉圖／修復無法使用）");
-  // LibreOffice 不隨程式打包，沒有是正常情況，不該顯示成錯誤。
-  parts.push(e.libreoffice ? e.libreoffice : "未偵測到 LibreOffice（Office 轉檔無法使用）");
+  const parts = [
+    e.ghostscript ? `Ghostscript ${e.ghostscript}` : "Ghostscript 缺失（壓縮／轉圖／修復無法使用）",
+    // LibreOffice 不隨程式打包，沒有是正常情況，不該顯示成錯誤。
+    e.libreoffice ?? "未偵測到 LibreOffice（Office 轉檔無法使用）",
+  ];
   engineEl.textContent = parts.join("　·　");
   engineEl.className = e.ghostscript ? "engine ok" : "engine bad";
 }
 
+buildToolCards();
+edSetMode("text");
 void loadFonts();
 void showEngines();
 render();

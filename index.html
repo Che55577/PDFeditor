@@ -15,32 +15,27 @@
         <p id="engine" class="engine"></p>
       </header>
 
-      <nav class="tools" id="tools">
-        <button type="button" data-tool="compress" class="active">壓縮</button>
-        <button type="button" data-tool="merge">合併</button>
-        <button type="button" data-tool="extract">擷取頁面</button>
-        <button type="button" data-tool="remove">移除頁面</button>
-        <button type="button" data-tool="rotate">旋轉</button>
-        <button type="button" data-tool="crop">裁切</button>
-        <button type="button" data-tool="split">分割</button>
-        <button type="button" data-tool="toimage">轉成圖片</button>
-        <button type="button" data-tool="imagestopdf">圖片轉 PDF</button>
-        <button type="button" data-tool="stamp">圖章</button>
-        <button type="button" data-tool="repair">修復</button>
-        <button type="button" data-tool="watermark">浮水印</button>
-        <button type="button" data-tool="pagenumbers">頁碼</button>
-        <button type="button" data-tool="officetopdf">Office 轉 PDF</button>
-        <button type="button" data-tool="tomarkdown">轉成 Markdown</button>
-        <button type="button" data-tool="annotate">註記</button>
-      </nav>
-
       <section id="drop" class="drop">
-        <p>把 PDF 拖進來，或<button id="browse" class="link" type="button">選擇檔案</button></p>
+        <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 16V4m0 0L7 9m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16" fill="none"
+                stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        <p class="drop-title">把檔案拖進來</p>
+        <p class="drop-sub">或<button id="browse" class="link" type="button">選擇檔案</button><span id="acceptHint"></span></p>
       </section>
 
-      <div class="options">
+      <ul id="files" class="filelist"></ul>
+
+      <section class="picker-block">
+        <h2 class="section-title">選擇功能<span class="section-note">可以複選，會依合理順序依序處理</span></h2>
+        <div id="tools" class="tool-grid"></div>
+      </section>
+
+      <div id="panels" class="panels">
         <fieldset class="levels" data-for="compress">
-          <legend class="sr-only">壓縮程度</legend>
+          <legend>壓縮程度</legend>
           <label>
             <input type="radio" name="level" value="extreme" />
             <span>極限壓縮<em>檔案最小，畫質明顯下降</em></span>
@@ -55,7 +50,7 @@
           </label>
         </fieldset>
 
-        <p class="hint" data-for="merge">依下方清單由上而下合併，可用 ↑ ↓ 調整順序。</p>
+        <p class="hint" data-for="merge">依上方清單由上而下合併，可用 ↑ ↓ 調整順序。</p>
 
         <label class="field" data-for="extract">
           <span>保留哪些頁</span>
@@ -67,19 +62,20 @@
           <input id="removePages" type="text" placeholder="例如 2, 5-6" />
         </label>
 
-        <div class="rotate-opts" data-for="rotate">
+        <div class="stack" data-for="rotate">
           <label class="field">
             <span>哪些頁（留空代表全部）</span>
             <input id="rotatePages" type="text" placeholder="例如 1-3" />
           </label>
           <fieldset class="angles">
-            <legend class="sr-only">旋轉角度</legend>
+            <legend>旋轉角度</legend>
             <label><input type="radio" name="angle" value="90" checked /><span>順時針 90°</span></label>
             <label><input type="radio" name="angle" value="180" /><span>180°</span></label>
             <label><input type="radio" name="angle" value="270" /><span>逆時針 90°</span></label>
           </fieldset>
         </div>
-        <div class="crop-opts" data-for="crop">
+
+        <div class="stack" data-for="crop">
           <label class="field">
             <span>哪些頁（留空代表全部）</span>
             <input id="cropPages" type="text" placeholder="例如 1-3" />
@@ -98,13 +94,13 @@
           <input id="splitChunk" type="number" min="1" step="1" value="1" />
         </label>
 
-        <div class="rotate-opts" data-for="toimage">
+        <div class="stack" data-for="toimage">
           <label class="field">
             <span>解析度（DPI，20–600）</span>
             <input id="imageDpi" type="number" min="20" max="600" step="10" value="150" />
           </label>
           <fieldset class="angles">
-            <legend class="sr-only">圖片格式</legend>
+            <legend>圖片格式</legend>
             <label><input type="radio" name="imgfmt" value="jpeg" checked /><span>JPG（照片、掃描件）</span></label>
             <label><input type="radio" name="imgfmt" value="png" /><span>PNG（無損，圖表與文字頁）</span></label>
           </fieldset>
@@ -116,7 +112,7 @@
         </label>
 
         <p class="hint" data-for="repair">
-          重建結構損毀的 PDF。不會順便壓縮——救回來之後想縮小，再跑一次「壓縮」即可。
+          重建結構損毀的 PDF。不會順便壓縮——救回來之後想縮小，再勾「壓縮」即可。
         </p>
 
         <div class="stack" data-for="watermark">
@@ -125,10 +121,7 @@
             <input id="wmText" type="text" placeholder="例如 機密文件" value="機密文件" />
           </label>
           <div class="grid">
-            <label class="field">
-              <span>字型</span>
-              <select id="wmFont" class="fontpick"></select>
-            </label>
+            <label class="field"><span>字型</span><select id="wmFont" class="fontpick"></select></label>
             <label class="field"><span>字級</span><input id="wmSize" type="number" min="1" max="400" value="60" /></label>
             <label class="field"><span>角度</span><input id="wmAngle" type="number" min="-180" max="180" value="45" /></label>
             <label class="field"><span>透明度</span><input id="wmOpacity" type="number" min="0" max="1" step="0.05" value="0.25" /></label>
@@ -157,10 +150,7 @@
                 <option value="topRight">右上</option>
               </select>
             </label>
-            <label class="field">
-              <span>字型</span>
-              <select id="pnFont" class="fontpick"></select>
-            </label>
+            <label class="field"><span>字型</span><select id="pnFont" class="fontpick"></select></label>
             <label class="field"><span>字級</span><input id="pnSize" type="number" min="1" max="400" value="11" /></label>
             <label class="field"><span>起始頁碼</span><input id="pnStart" type="number" value="1" /></label>
             <label class="field"><span>邊界（公釐）</span><input id="pnMargin" type="number" min="0" value="12" /></label>
@@ -205,14 +195,16 @@
 
         <p class="hint" data-for="tomarkdown">
           抽出文字並整理成 Markdown：接回被自動換行截斷的段落、辨識清單與標題。
-          <br />
-          限制：文字抽取拿不到字級，所以標題層級是依版面推測的，只分文件標題與章節兩層。
           掃描件沒有可抽取的文字，需要先做 OCR。
         </p>
 
         <p class="hint" data-for="officetopdf">
           Word、Excel、PowerPoint 轉 PDF，透過系統上的 LibreOffice 處理，檔案一樣不離開這台電腦。
           只做這個方向——反向的 PDF 轉 Word 產出的是一堆文字方塊拼成的版面，實務上不能用，所以不做。
+        </p>
+
+        <p class="hint" data-for="annotate">
+          註記是互動式的，不能和其他功能一起執行。勾選後按「開啟編輯器」。
         </p>
       </div>
 
@@ -227,12 +219,14 @@
 
       <section id="editor" class="editor" hidden>
         <div class="editor-bar">
+          <div class="modes">
+            <button id="edModeText" type="button" class="mode active">✏️ 文字</button>
+            <button id="edModeInk" type="button" class="mode">🖊️ 手繪</button>
+          </div>
+          <span class="sep"></span>
           <button id="edPrev" type="button" class="ghost tiny">◀</button>
           <span id="edPage" class="meta">1 / 1</span>
           <button id="edNext" type="button" class="ghost tiny">▶</button>
-          <span class="sep"></span>
-          <button id="edModeText" type="button" class="mode active">文字</button>
-          <button id="edModeInk" type="button" class="mode">手繪</button>
           <span class="sep"></span>
           <label class="inline"><span>字級</span><input id="edSize" type="number" min="6" max="120" value="16" /></label>
           <label class="inline"><span>顏色</span><input id="edColor" type="color" value="#cc0000" /></label>
@@ -243,6 +237,8 @@
           <span class="sep"></span>
           <button id="edUndo" type="button" class="ghost tiny">移除上一個</button>
         </div>
+
+        <p id="edMode" class="mode-hint">文字模式：點一下頁面任意處，輸入文字後按 Enter。</p>
 
         <div class="editor-stage">
           <canvas id="edCanvas"></canvas>
@@ -258,7 +254,6 @@
         <p class="hint">
           這是<strong>疊加式註記</strong>，改不了文件裡既有的文字——PDF 沒有段落的概念，
           原有文字的位置在產生檔案時就已經固定。存檔採增量寫入，原始內容一個位元組都不動。
-          <br />
           也因此，<strong>用色塊蓋住敏感資料並不安全</strong>，被蓋住的內容仍然留在檔案裡。
         </p>
       </section>

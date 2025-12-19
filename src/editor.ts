@@ -152,7 +152,11 @@ export class Editor {
 
   /** 加上手繪筆跡。`strokes` 是多段筆畫，每段是連續的畫布座標。 */
   addInk(strokes: CanvasPoint[][], style: InkStyle): void {
-    const usable = strokes.filter((s) => s.length >= 2);
+    // 點一下就放開只會產生單一個點。PDF 的 Ink 需要至少兩個頂點才畫得出東西，
+    // 所以把它撐成一個極短的線段——使用者要的是一個點，不是「什麼都沒發生」。
+    const usable = strokes
+      .filter((s) => s.length > 0)
+      .map((s) => (s.length === 1 ? [s[0], { x: s[0].x + 0.5, y: s[0].y + 0.5 }] : s));
     if (usable.length === 0) throw new Error("沒有可用的筆跡");
 
     const annot = this.#page.createAnnotation("Ink");

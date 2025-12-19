@@ -106,6 +106,97 @@ impl Operation {
             _ => "pdf",
         }
     }
+
+    /// 串接時的執行順序。
+    ///
+    /// 順序不是隨便定的：格式轉換要先把來源變成 PDF，修復要在動結構之前，
+    /// 頁面操作要在加註記之前（否則註記會蓋在被刪掉的頁上），壓縮幾乎一定要最後
+    /// ——先壓再疊圖只會讓疊上去的東西沒被壓到，而且中間步驟重寫檔案會抵銷壓縮效果。
+    /// 分割與轉圖是終點，它們會產生多個輸出。
+    fn order(&self) -> u8 {
+        match self {
+            Operation::OfficeToPdf | Operation::ImagesToPdf { .. } => 0,
+            Operation::Repair => 1,
+            Operation::Merge => 2,
+            Operation::Extract { .. } | Operation::Remove { .. } => 3,
+            Operation::Rotate { .. } => 4,
+            Operation::Crop { .. } => 5,
+            Operation::Watermark { .. } => 6,
+            Operation::PageNumbers { .. } => 7,
+            Operation::Stamp { .. } => 8,
+            Operation::Compress { .. } => 9,
+            Operation::Split { .. } => 10,
+            Operation::ToImage { .. } | Operation::ToMarkdown => 11,
+        }
+    }
+
+    /// 給使用者看的名稱，錯誤訊息會用到。
+    fn label(&self) -> &'static str {
+        match self {
+            Operation::Compress { .. } => "壓縮",
+            Operation::Merge => "合併",
+            Operation::Extract { .. } => "擷取頁面",
+            Operation::Remove { .. } => "移除頁面",
+            Operation::Rotate { .. } => "旋轉",
+            Operation::Crop { .. } => "裁切",
+            Operation::Split { .. } => "分割",
+            Operation::ToImage { .. } => "轉成圖片",
+            Operation::ImagesToPdf { .. } => "圖片轉 PDF",
+            Operation::Repair => "修復",
+            Operation::Watermark { .. } => "浮水印",
+            Operation::PageNumbers { .. } => "頁碼",
+            Operation::Stamp { .. } => "圖章",
+            Operation::OfficeToPdf => "Office 轉 PDF",
+            Operation::ToMarkdown => "轉成 Markdown",
+        }
+    }
+
+    /// 產出非 PDF，後面不能再接任何步驟。
+    fn is_terminal(&self) -> bool {
+        matches!(self, Operation::ToImage { .. } | Operation::ToMarkdown)
+    }
+
+    /// 吃的不是 PDF，只能放在最前面。
+    fn is_entry(&self) -> bool {
+        matches!(self, Operation::OfficeToPdf | Operation::ImagesToPdf { .. })
+    }
+}
+
+/// 檢查一組操作能不能串在一起，不行就回傳看得懂的理由。
+fn validate_pipeline(ops: &[Operation]) -> Result<(), String> {
+    if ops.is_empty() {
+        return Err("請至少勾選一項功能".into());
+    }
+    let entries: Vec<&str> = ops.iter().filter(|o| o.is_entry()).map(|o| o.label()).collect();
+    if entries.len() > 1 {
+        return Err(format!("「{}」不能同時使用，它們吃的來源格式不同", entries.join("」與「")));
+    }
+    if !entries.is_empty() && ops.len() > 1 {
+        // 入口轉換之後接別的步驟是合理的，只要它自己排在最前面即可，這裡不擋。
+    }
+
+    let terminals: Vec<&str> = ops.iter().filter(|o| o.is_terminal()).map(|o| o.label()).collect();
+    if terminals.len() > 1 {
+        return Err(format!("「{}」不能同時使用，它們都會產生非 PDF 的輸出", terminals.join("」與「")));
+    }
+    if !terminals.is_empty() && ops.iter().any(|o| matches!(o, Operation::Split { .. })) {
+        return Err(format!("「分割」不能和「{}」一起用", terminals[0]));
+    }
+
+    let has_extract = ops.iter().any(|o| matches!(o, Operation::Extract { .. }));
+    let has_remove = ops.iter().any(|o| matches!(o, Operation::Remove { .. }));
+    if has_extract && has_remove {
+        return Err("「擷取頁面」與「移除頁面」互相衝突，請只選一個".into());
+    }
+
+    let mut seen: Vec<u8> = ops.iter().map(|o| o.order()).collect();
+    seen.sort_unstable();
+    let before = seen.len();
+    seen.dedup();
+    if seen.len() != before {
+        return Err("同一項功能不能重複勾選".into());
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -279,6 +370,138 @@ fn markdown_from_lines(
     })
 }
 
+/// 串接過程中的一份檔案。
+///
+/// `keep` 持有中間產物的 Ephemeral——只要它還在這個 Vec 裡就不會被抹除，
+/// 一旦下一階段算完、整個 Vec 被替換掉，上一階段的中間檔就自動消失。
+struct Item {
+    path: PathBuf,
+    /// 累積的檔名字尾，例如 `_compressed_watermarked`
+    suffix: String,
+    keep: Option<Ephemeral>,
+}
+
+#[tauri::command]
+async fn run_pipeline(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    ops: Vec<Operation>,
+) -> Result<Vec<JobResult>, String> {
+    if paths.is_empty() {
+        return Err("請先選擇檔案".into());
+    }
+    validate_pipeline(&ops)?;
+
+    let mut ops = ops;
+    ops.sort_by_key(Operation::order);
+
+    if ops.iter().any(Operation::needs_gs) && state.gs.is_none() {
+        return Err("找不到 Ghostscript 引擎，此功能無法使用".into());
+    }
+    if ops.iter().any(Operation::needs_office) && state.office.is_none() {
+        return Err("找不到 LibreOffice。Office 轉檔需要先安裝它，安裝後請重新啟動本程式".into());
+    }
+
+    let root = state.eph_root.clone();
+    let gs = state.gs.clone();
+    let office = state.office.clone();
+    let source_name = file_name(&PathBuf::from(&paths[0]), &paths[0]);
+    let orig_bytes: u64 = paths
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
+        .sum();
+
+    let mut items: Vec<Item> = paths
+        .into_iter()
+        .map(|p| Item { path: PathBuf::from(p), suffix: String::new(), keep: None })
+        .collect();
+    let steps = ops.len();
+    let mut extension = "pdf";
+
+    for (step, op) in ops.iter().enumerate() {
+        let _ = app.emit(
+            "op:progress",
+            serde_json::json!({ "index": step, "total": steps, "name": op.label() }),
+        );
+        extension = op.extension();
+
+        // 合併與圖片轉 PDF 是「多進一出」，整批送進去跑一次；其餘每份各跑一次。
+        let batches: Vec<Vec<&Item>> = if op.merges() {
+            vec![items.iter().collect()]
+        } else {
+            items.iter().map(|i| vec![i]).collect()
+        };
+
+        let mut next: Vec<Item> = Vec::new();
+        for batch in batches {
+            let batch_paths: Vec<String> =
+                batch.iter().map(|i| i.path.to_string_lossy().to_string()).collect();
+            let carried = batch[0].suffix.clone();
+
+            let (op2, gs, office, root) = (op.clone(), gs.clone(), office.clone(), root.clone());
+            let outcome = tauri::async_runtime::spawn_blocking(move || {
+                // 失敗時這一階段已建立的 Ephemeral 全部在此被 Drop 抹除。
+                execute(
+                    &op2,
+                    &batch_paths,
+                    Tools { gs: gs.as_deref(), office: office.as_deref() },
+                    &root,
+                )
+            })
+            .await
+            .map_err(|e| format!("工作執行緒異常：{e}"))?;
+
+            match outcome {
+                Ok(outputs) => {
+                    for (eph, suffix) in outputs {
+                        next.push(Item {
+                            path: eph.path().to_path_buf(),
+                            suffix: format!("{carried}{suffix}"),
+                            keep: Some(eph),
+                        });
+                    }
+                }
+                // 中途失敗就整批中止：後面的步驟建立在這一步的產出上，硬做下去只會
+                // 產生一堆半成品，讓使用者更難判斷哪裡出錯。
+                Err(error) => {
+                    return Err(if steps > 1 {
+                        format!("在「{}」這一步失敗：{error}", op.label())
+                    } else {
+                        error
+                    })
+                }
+            }
+        }
+        // 舊的 items 在這裡被丟棄，上一階段的中間檔隨之抹除。
+        items = next;
+    }
+
+    let stem = source_name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(&source_name)
+        .to_string();
+
+    let mut results = Vec::with_capacity(items.len());
+    for (nth, item) in items.into_iter().enumerate() {
+        let Some(eph) = item.keep else { continue };
+        let id = file_name(eph.path(), "");
+        let out_bytes = std::fs::metadata(eph.path()).map(|m| m.len()).unwrap_or(0);
+        state.jobs.lock().unwrap().insert(id.clone(), eph);
+        results.push(JobResult {
+            id,
+            name: format!("{stem}{}.{extension}", item.suffix),
+            // 多個輸出時只有第一筆掛上來源大小，否則清單加總會膨脹成好幾倍。
+            orig_bytes: if nth == 0 { orig_bytes } else { 0 },
+            out_bytes,
+            error: None,
+        });
+    }
+    Ok(results)
+}
+
+/// 單一操作的捷徑，給還沒改用串接的呼叫端（目前是 Markdown 的備援路徑）。
 #[tauri::command]
 async fn run_op(
     app: AppHandle,
@@ -286,80 +509,7 @@ async fn run_op(
     paths: Vec<String>,
     op: Operation,
 ) -> Result<Vec<JobResult>, String> {
-    if paths.is_empty() {
-        return Err("請先選擇檔案".into());
-    }
-    if op.needs_gs() && state.gs.is_none() {
-        return Err("找不到 Ghostscript 引擎，此功能無法使用".into());
-    }
-    if op.needs_office() && state.office.is_none() {
-        return Err("找不到 LibreOffice。Office 轉檔需要先安裝它，安裝後請重新啟動本程式".into());
-    }
-    let root = state.eph_root.clone();
-    let gs = state.gs.clone();
-    let office = state.office.clone();
-
-    // 合併是唯一的「多進一出」，輸入清單整批送進去跑一次。
-    let batches: Vec<Vec<String>> = if op.merges() {
-        vec![paths]
-    } else {
-        paths.into_iter().map(|p| vec![p]).collect()
-    };
-    let total = batches.len();
-    let mut results = Vec::with_capacity(total);
-
-    for (index, batch) in batches.into_iter().enumerate() {
-        let source_name = file_name(&PathBuf::from(&batch[0]), &batch[0]);
-        let stem = source_name
-            .rsplit_once('.')
-            .map(|(s, _)| s)
-            .unwrap_or(&source_name)
-            .to_string();
-
-        let _ = app.emit(
-            "op:progress",
-            serde_json::json!({ "index": index, "total": total, "name": source_name }),
-        );
-
-        let orig_bytes: u64 = batch
-            .iter()
-            .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
-            .sum();
-
-        let (op2, gs, office, root) = (op.clone(), gs.clone(), office.clone(), root.clone());
-        let outcome = tauri::async_runtime::spawn_blocking(move || {
-            // 失敗時所有 Ephemeral 在此函式結束就被 Drop 抹除，不需要額外清理。
-            execute(&op2, &batch, Tools { gs: gs.as_deref(), office: office.as_deref() }, &root)
-        })
-        .await
-        .map_err(|e| format!("工作執行緒異常：{e}"))?;
-
-        match outcome {
-            Ok(outputs) => {
-                for (nth, (eph, suffix)) in outputs.into_iter().enumerate() {
-                    let id = file_name(eph.path(), "");
-                    let out_bytes = std::fs::metadata(eph.path()).map(|m| m.len()).unwrap_or(0);
-                    state.jobs.lock().unwrap().insert(id.clone(), eph);
-                    results.push(JobResult {
-                        id,
-                        name: format!("{stem}{suffix}.{}", op.extension()),
-                        // 一進多出時只有第一筆掛上來源大小，否則清單加總會膨脹成好幾倍。
-                        orig_bytes: if nth == 0 { orig_bytes } else { 0 },
-                        out_bytes,
-                        error: None,
-                    });
-                }
-            }
-            Err(error) => results.push(JobResult {
-                id: String::new(),
-                name: source_name,
-                orig_bytes,
-                out_bytes: 0,
-                error: Some(error),
-            }),
-        }
-    }
-    Ok(results)
+    run_pipeline(app, state, paths, vec![op]).await
 }
 
 /// 一次操作的產出：暫存檔，以及要接在來源檔名後面的字尾。
@@ -695,6 +845,106 @@ mod tests {
     ///
     /// markdown.rs 的單元測試用的是固定樣本，證明不了 Ghostscript 那一段；
     /// 中文編碼是這條路徑最容易壞的地方，所以這裡要用真檔案跑一次。
+    // ---- 串接 ----
+
+    #[test]
+    fn pipeline_runs_in_canonical_order_not_click_order() {
+        let mut ops = vec![
+            Operation::Compress { level: gs::Level::Recommended },
+            Operation::Extract { pages: vec![1] },
+            Operation::Repair,
+        ];
+        ops.sort_by_key(Operation::order);
+        let labels: Vec<&str> = ops.iter().map(|o| o.label()).collect();
+        // 修復要在動結構之前，壓縮一定要最後——先壓再改只會抵銷壓縮效果
+        assert_eq!(labels, vec!["修復", "擷取頁面", "壓縮"]);
+    }
+
+    #[test]
+    fn pipeline_rejects_conflicting_combinations() {
+        let cases: Vec<(Vec<Operation>, &str)> = vec![
+            (vec![], "至少勾選"),
+            (
+                vec![
+                    Operation::Extract { pages: vec![1] },
+                    Operation::Remove { pages: vec![2] },
+                ],
+                "衝突",
+            ),
+            (
+                vec![
+                    Operation::ToMarkdown,
+                    Operation::ToImage { dpi: 150, format: gs::ImageFormat::Jpeg },
+                ],
+                "非 PDF",
+            ),
+            (
+                vec![Operation::ToMarkdown, Operation::Split { chunk: 2 }],
+                "分割",
+            ),
+            (
+                vec![Operation::OfficeToPdf, Operation::ImagesToPdf { margin: 0.0 }],
+                "來源格式不同",
+            ),
+            (
+                vec![
+                    Operation::Rotate { pages: vec![], degrees: 90 },
+                    Operation::Rotate { pages: vec![], degrees: 180 },
+                ],
+                "重複勾選",
+            ),
+        ];
+        for (ops, expect) in cases {
+            let err = validate_pipeline(&ops).unwrap_err();
+            assert!(err.contains(expect), "訊息應包含「{expect}」，實得：{err}");
+        }
+    }
+
+    #[test]
+    fn pipeline_accepts_a_sensible_chain() {
+        let ops = vec![
+            Operation::Compress { level: gs::Level::Recommended },
+            Operation::Rotate { pages: vec![], degrees: 90 },
+            Operation::Split { chunk: 5 },
+        ];
+        assert!(validate_pipeline(&ops).is_ok());
+    }
+
+    /// 串接的每一步都要真的作用到上一步的產出。
+    #[test]
+    fn chained_steps_all_take_effect() {
+        let Some(src) = corpus("c2_scan.pdf") else {
+            eprintln!("跳過：語料不存在");
+            return;
+        };
+        if gs::locate(None).is_none() {
+            return;
+        }
+        let root = eph_root();
+        let tools = Tools { gs: None, office: None };
+
+        // 先擷取 4 頁
+        let picked = execute(
+            &Operation::Extract { pages: vec![1, 2, 3, 4] },
+            &[src.to_string_lossy().into()],
+            tools,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(pages::count(picked[0].0.path()).unwrap(), 4);
+
+        // 再從這 4 頁分成每份 2 頁
+        let split = execute(
+            &Operation::Split { chunk: 2 },
+            &[picked[0].0.path().to_string_lossy().into()],
+            tools,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(split.len(), 2, "4 頁切成每份 2 頁應該得到 2 個檔案");
+        assert_eq!(pages::count(split[0].0.path()).unwrap(), 2);
+    }
+
     /// 圖章要能蓋在每一頁，且不改變頁數。
     #[test]
     fn stamp_applies_to_all_pages() {
@@ -829,6 +1079,7 @@ pub fn run() {
             read_file_bytes,
             markdown_from_lines,
             save_edited,
+            run_pipeline,
             run_op,
             save_job,
             discard_all

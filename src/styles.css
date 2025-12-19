@@ -44,27 +44,50 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
 .engine.ok { color: var(--good); }
 .engine.bad { color: var(--bad); }
 
-.tools {
+.section-title {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 18px 0 0;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--line);
+  align-items: baseline;
+  gap: 10px;
+  margin: 22px 0 10px;
+  font-size: 0.95rem;
 }
-.tools button {
-  padding: 7px 14px;
-  background: none;
-  color: var(--dim);
-  border-radius: 8px;
-}
-.tools button:hover { color: var(--text); }
-.tools button.active {
-  background: var(--accent);
-  color: #fff;
-}
+.section-note { font-size: 0.78rem; font-weight: normal; color: var(--dim); }
 
-.options { margin: 16px 0; }
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.toolcard {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.toolcard:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.toolcard.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+}
+.toolcard input { margin-top: 3px; flex: none; }
+.tooltext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tooltext strong { font-size: 0.9rem; font-weight: 600; }
+.tooltext em { font-style: normal; font-size: 0.74rem; color: var(--dim); }
+
+.panels { display: grid; gap: 14px; margin: 16px 0; }
+.panels > [data-for] {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.panels > p[data-for] { margin: 0; }
 .hint { margin: 0; font-size: 0.82rem; color: var(--dim); }
 
 .field { display: flex; flex-direction: column; gap: 5px; }
@@ -158,16 +181,50 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
 .angles label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
 
 .drop {
-  margin: 16px 0;
-  padding: 34px 16px;
+  margin: 18px 0 12px;
+  padding: 40px 16px;
   border: 2px dashed var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--panel);
   text-align: center;
-  transition: border-color 0.15s, background 0.15s;
+  transition: border-color 0.15s, background 0.15s, padding 0.15s;
 }
-.drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
-.drop p { margin: 0; color: var(--dim); }
+.drop.over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+/* 已經有檔案之後縮小，把版面讓給檔案清單 */
+.drop.compact { padding: 16px; }
+.drop.compact .drop-icon { display: none; }
+.drop.compact .drop-title { font-size: 0.92rem; }
+
+.drop-icon { width: 44px; height: 44px; color: var(--dim); opacity: 0.7; }
+.drop-title { margin: 8px 0 4px; font-size: 1.12rem; font-weight: 600; }
+.drop-sub { margin: 0; font-size: 0.85rem; color: var(--dim); }
+
+/* iLovePDF 風格：檔名要大、要看得清楚 */
+.filelist { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 8px; }
+.filecard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.filecard.bad { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.fileinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.filename {
+  font-size: 1.02rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filemeta { font-size: 0.8rem; color: var(--dim); }
+.filemeta.error { color: var(--bad); }
+.filecard button { padding: 4px 10px; font-size: 0.82rem; }
 
 .link {
   border: 0;
@@ -269,6 +326,16 @@ button.ghost { background: none; border-color: var(--line); color: var(--text); 
   width: 1px;
   height: 20px;
   background: var(--line);
+}
+/* 模式是編輯器裡最重要的選擇，要比其他控制項醒目 */
+.modes { display: flex; gap: 4px; padding: 2px; border-radius: 10px; background: var(--bg); }
+.mode-hint {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  font-size: 0.82rem;
+  color: var(--dim);
 }
 .editor-bar .inline {
   display: flex;
