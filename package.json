@@ -4,7 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "sync:mupdf": "node scripts/sync-mupdf.mjs",
+    "postinstall": "node scripts/sync-mupdf.mjs",
+    "predev": "node scripts/sync-mupdf.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/sync-mupdf.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

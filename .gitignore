@@ -26,6 +26,9 @@ dist-ssr
 # 壓縮引擎（約 40MB，取得方式見 vendor/README.md）
 vendor/ghostscript/
 
+# MuPDF 的執行期檔案（約 10MB），由 npm run sync:mupdf 從 node_modules 複製
+public/mupdf/
+
 # 測試語料與中間產物皆可重新產生；results.csv 與 legibility.png 是量測結論，要進版控
 bench/corpus/
 bench/_work/
