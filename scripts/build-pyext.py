@@ -37,7 +37,11 @@ PRUNE_DIRS = {"__pycache__", "tests", "test", "testing", "examples", "docs"}
 PRUNE_SUFFIXES = {".pyi", ".pdb", ".chm"}
 
 # 裝完就用不到的安裝工具。擴充包是固定產物，不需要在使用者機器上自我更新。
+#
+# distutils-precedence.pth 一定要一起刪：它會在每次啟動時 import _distutils_hack，
+# 而那個模組已經被刪掉了，結果是每次執行都印一段 ModuleNotFoundError。
 PRUNE_PACKAGES = ["pip", "setuptools", "pkg_resources", "wheel", "_distutils_hack"]
+PRUNE_FILES = ["Lib/site-packages/distutils-precedence.pth"]
 
 # OpenCV 的影片編解碼器有 29 MB，而我們只做影像處理。實測移除後 pdf2docx
 # 的匯入與轉檔都正常。
@@ -74,6 +78,12 @@ def prune(root: Path) -> int:
             elif path.is_file():
                 saved += path.stat().st_size
                 path.unlink()
+
+    for rel in PRUNE_FILES:
+        path = root / rel
+        if path.is_file():
+            saved += path.stat().st_size
+            path.unlink()
 
     for pattern in PRUNE_GLOBS:
         for path in root.glob(pattern):

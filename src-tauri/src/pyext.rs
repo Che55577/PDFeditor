@@ -69,7 +69,11 @@ finally:
 "#;
 
 /// PDF 轉 Word。
-pub fn pdf_to_docx(py: &Path, input: &Path, output: &Path) -> Result<()> {
+///
+/// 轉完會修一次字型名稱：pdf2docx 寫出的名稱常常在系統上不存在（實測 `DFKaiShu-SB-Estd-BF`
+/// 會變成 `DFKai`），對不上就會退回預設字型，字寬一變整段重新換行——那就是「跑版」。
+/// 詳見 `docxfont`。
+pub fn pdf_to_docx(py: &Path, input: &Path, output: &Path, fallback_font: &str) -> Result<()> {
     let result = build_cmd(py)
         .arg("-c")
         .arg(CONVERT)
@@ -89,9 +93,14 @@ pub fn pdf_to_docx(py: &Path, input: &Path, output: &Path) -> Result<()> {
         return Err(format!("轉檔失敗：{}", msg.trim()));
     }
     match std::fs::metadata(output) {
-        Ok(m) if m.len() > 0 => Ok(()),
-        _ => Err("轉檔失敗：沒有產生輸出，這份 PDF 可能是掃描件（需要先做 OCR）".into()),
+        Ok(m) if m.len() > 0 => {}
+        _ => return Err("轉檔失敗：沒有產生輸出，這份 PDF 可能是掃描件（需要先做 OCR）".into()),
     }
+    // 字型修不好不該讓整趟轉檔失敗——沒修的檔案仍然可用，只是版面比較不準。
+    if let Err(e) = crate::docxfont::remap(output, fallback_font) {
+        eprintln!("字型名稱修正失敗，輸出仍可使用：{e}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -122,7 +131,7 @@ mod tests {
         };
         let dir = workdir("convert");
         let out = dir.join("out.docx");
-        pdf_to_docx(&py, &src, &out).unwrap();
+        pdf_to_docx(&py, &src, &out, "標楷體").unwrap();
 
         let xml = {
             let file = std::fs::File::open(&out).unwrap();
@@ -140,6 +149,11 @@ mod tests {
             !xml.contains("<w:txbxContent>"),
             "不該出現浮動文字方塊——那正是 LibreOffice 那條路不能用的原因"
         );
+        // pdf2docx 原本會寫出系統上不存在的 DFKai，那是跑版的主因
+        assert!(
+            !xml.contains(r#"w:eastAsia="DFKai""#),
+            "字型名稱應該已被換成實際安裝的字型"
+        );
     }
 
     #[test]
@@ -148,7 +162,7 @@ mod tests {
         let dir = workdir("bad");
         let src = dir.join("x.pdf");
         std::fs::write(&src, b"not a pdf at all").unwrap();
-        let err = pdf_to_docx(&py, &src, &dir.join("o.docx")).unwrap_err();
+        let err = pdf_to_docx(&py, &src, &dir.join("o.docx"), "Arial").unwrap_err();
         assert!(err.contains("轉檔失敗"), "訊息應該說明失敗：{err}");
     }
 }

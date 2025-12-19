@@ -9,7 +9,8 @@ import { extractLines } from "./mupdf-text";
 type Tool =
   | "compress" | "merge" | "extract" | "remove" | "rotate" | "crop" | "split"
   | "toimage" | "imagestopdf" | "repair" | "watermark" | "pagenumbers"
-  | "stamp" | "officetopdf" | "tomarkdown" | "pdftoword" | "annotate";
+  | "stamp" | "officetopdf" | "tomarkdown" | "pdftoword" | "annotate"
+  | "encrypt" | "decrypt";
 
 interface FileInfo {
   path: string;
@@ -27,7 +28,7 @@ interface JobResult {
   error: string | null;
 }
 
-type Group = "整理" | "最佳化" | "轉換" | "編輯";
+type Group = "整理" | "最佳化" | "轉換" | "編輯" | "安全";
 
 interface ToolSpec {
   id: Tool;
@@ -45,7 +46,7 @@ interface ToolSpec {
   terminal?: boolean;
 }
 
-const GROUPS: Group[] = ["整理", "最佳化", "轉換", "編輯"];
+const GROUPS: Group[] = ["整理", "最佳化", "轉換", "編輯", "安全"];
 
 const OFFICE_EXTS = [
   "doc", "docx", "rtf", "odt", "txt",
@@ -77,6 +78,9 @@ const TOOLS: ToolSpec[] = [
   { id: "pagenumbers", label: "頁碼", hint: "自動編號", group: "編輯", order: 7 },
   { id: "stamp", label: "圖章", hint: "簽名檔、公司章", group: "編輯", order: 8 },
   { id: "annotate", label: "註記", hint: "互動式編輯器", group: "編輯", order: 99, exclusive: true },
+
+  { id: "decrypt", label: "解密", hint: "移除密碼保護", group: "安全", order: 1 },
+  { id: "encrypt", label: "加密", hint: "AES-256 密碼保護", group: "安全", order: 12 },
 ];
 
 const spec = (id: Tool) => TOOLS.find((t) => t.id === id)!;
@@ -486,8 +490,22 @@ function operationFor(id: Tool, minPages: number): object {
       return { kind: "officeToPdf" };
     case "tomarkdown":
       return { kind: "toMarkdown" };
-    case "pdftoword":
-      return { kind: "pdfToWord" };
+    case "pdftoword": {
+      // 這裡要的是字型「名稱」，不是 fontpick 的 value（那是檔案路徑）
+      const opt = $<HTMLSelectElement>("wordFont").selectedOptions[0];
+      return { kind: "pdfToWord", fallback_font: opt?.textContent?.trim() || "Arial" };
+    }
+    case "encrypt": {
+      const user = $<HTMLInputElement>("encUser").value;
+      const owner = $<HTMLInputElement>("encOwner").value;
+      if (!user && !owner) throw new Error("「加密」請至少設定一個密碼");
+      return { kind: "encrypt", user, owner };
+    }
+    case "decrypt": {
+      const password = $<HTMLInputElement>("decPassword").value;
+      if (!password) throw new Error("「解密」需要輸入目前的密碼");
+      return { kind: "decrypt", password };
+    }
     case "annotate":
       throw new Error("註記是互動式的，不走批次流程");
   }
@@ -1071,12 +1089,14 @@ interface Engines {
   ghostscript: string | null;
   libreoffice: string | null;
   pyext: string | null;
+  qpdf: string | null;
 }
 
 async function showEngines() {
   const e = await invoke<Engines>("engine_status");
   const parts = [
     e.ghostscript ? `Ghostscript ${e.ghostscript}` : "Ghostscript 缺失（壓縮／轉圖／修復無法使用）",
+    e.qpdf ?? "qpdf 缺失（加解密無法使用）",
     // 後兩者不隨程式打包，沒有是正常情況，不該顯示成錯誤。
     e.libreoffice ?? "未偵測到 LibreOffice（Office 轉 PDF 無法使用）",
     e.pyext ?? "未安裝擴充包（PDF 轉 Word 無法使用）",

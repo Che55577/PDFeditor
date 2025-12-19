@@ -30,7 +30,8 @@
     "targets": ["nsis"],
     "license": "../LICENSE",
     "resources": {
-      "../vendor/ghostscript/": "ghostscript/"
+      "../vendor/ghostscript/": "ghostscript/",
+      "../vendor/qpdf/": "qpdf/"
     },
     "icon": [
       "icons/32x32.png",

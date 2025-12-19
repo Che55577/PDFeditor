@@ -1,4 +1,6 @@
 mod annotate;
+mod crypt;
+mod docxfont;
 mod ephemeral;
 mod font;
 mod gs;
@@ -23,6 +25,8 @@ struct AppState {
     office: Option<PathBuf>,
     /// Python 擴充包。216 MB，做成獨立安裝檔，沒裝屬正常情況。
     pyext: Option<PathBuf>,
+    /// qpdf，隨程式打包（8 MB），負責加解密。
+    qpdf: Option<PathBuf>,
     /// 所有落地的暫存檔都只會出現在這個目錄下。
     eph_root: PathBuf,
     /// 已完成、等待使用者儲存的結果。從這裡移除即代表抹除。
@@ -71,8 +75,9 @@ enum Operation {
     },
     /// Word / Excel / PowerPoint 轉 PDF
     OfficeToPdf,
-    /// PDF 轉 Word，需要 Python 擴充包
-    PdfToWord,
+    /// PDF 轉 Word，需要 Python 擴充包。
+    /// fallback_font 是輸出裡對不上系統字型時要換成什麼——見 docxfont。
+    PdfToWord { fallback_font: String },
     /// 抽出文字並整理成 Markdown
     ToMarkdown,
     /// 蓋圖章（簽名檔、公司章）。image 是另外選的圖片檔，不在批次輸入裡。
@@ -81,6 +86,10 @@ enum Operation {
         place: annotate::Placement,
         pages: Vec<u32>,
     },
+    /// 加上 AES-256 密碼保護
+    Encrypt { user: String, owner: String },
+    /// 移除密碼保護。**需要使用者提供正確密碼**，不做破解。
+    Decrypt { password: String },
 }
 
 impl Operation {
@@ -105,38 +114,40 @@ impl Operation {
     }
 
     fn needs_pyext(&self) -> bool {
-        matches!(self, Operation::PdfToWord)
+        matches!(self, Operation::PdfToWord { .. })
     }
 
     fn extension(&self) -> &'static str {
         match self {
             Operation::ToImage { format, .. } => format.extension(),
             Operation::ToMarkdown => "md",
-            Operation::PdfToWord => "docx",
+            Operation::PdfToWord { .. } => "docx",
             _ => "pdf",
         }
     }
 
     /// 串接時的執行順序。
     ///
-    /// 順序不是隨便定的：格式轉換要先把來源變成 PDF，修復要在動結構之前，
-    /// 頁面操作要在加註記之前（否則註記會蓋在被刪掉的頁上），壓縮幾乎一定要最後
-    /// ——先壓再疊圖只會讓疊上去的東西沒被壓到，而且中間步驟重寫檔案會抵銷壓縮效果。
-    /// 分割與轉圖是終點，它們會產生多個輸出。
+    /// 順序不是隨便定的：解密要最先，加密的檔案什麼都做不了；格式轉換要先把來源變成
+    /// PDF；修復要在動結構之前；頁面操作要在加註記之前（否則註記會蓋在被刪掉的頁上）；
+    /// 壓縮幾乎一定要最後——先壓再疊圖只會讓疊上去的東西沒被壓到，而且中間步驟重寫
+    /// 檔案會抵銷壓縮效果；加密則要排在分割之後，讓每一份都各自受保護。
     fn order(&self) -> u8 {
         match self {
             Operation::OfficeToPdf | Operation::ImagesToPdf { .. } => 0,
-            Operation::Repair => 1,
-            Operation::Merge => 2,
-            Operation::Extract { .. } | Operation::Remove { .. } => 3,
-            Operation::Rotate { .. } => 4,
-            Operation::Crop { .. } => 5,
-            Operation::Watermark { .. } => 6,
-            Operation::PageNumbers { .. } => 7,
-            Operation::Stamp { .. } => 8,
-            Operation::Compress { .. } => 9,
-            Operation::Split { .. } => 10,
-            Operation::ToImage { .. } | Operation::ToMarkdown | Operation::PdfToWord => 11,
+            Operation::Decrypt { .. } => 1,
+            Operation::Repair => 2,
+            Operation::Merge => 3,
+            Operation::Extract { .. } | Operation::Remove { .. } => 4,
+            Operation::Rotate { .. } => 5,
+            Operation::Crop { .. } => 6,
+            Operation::Watermark { .. } => 7,
+            Operation::PageNumbers { .. } => 8,
+            Operation::Stamp { .. } => 9,
+            Operation::Compress { .. } => 10,
+            Operation::Split { .. } => 11,
+            Operation::Encrypt { .. } => 12,
+            Operation::ToImage { .. } | Operation::ToMarkdown | Operation::PdfToWord { .. } => 13,
         }
     }
 
@@ -158,15 +169,21 @@ impl Operation {
             Operation::Stamp { .. } => "圖章",
             Operation::OfficeToPdf => "Office 轉 PDF",
             Operation::ToMarkdown => "轉成 Markdown",
-            Operation::PdfToWord => "PDF 轉 Word",
+            Operation::PdfToWord { .. } => "PDF 轉 Word",
+            Operation::Encrypt { .. } => "加密",
+            Operation::Decrypt { .. } => "解密",
         }
+    }
+
+    fn needs_qpdf(&self) -> bool {
+        matches!(self, Operation::Encrypt { .. } | Operation::Decrypt { .. })
     }
 
     /// 產出非 PDF，後面不能再接任何步驟。
     fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Operation::ToImage { .. } | Operation::ToMarkdown | Operation::PdfToWord
+            Operation::ToImage { .. } | Operation::ToMarkdown | Operation::PdfToWord { .. }
         )
     }
 
@@ -203,12 +220,16 @@ fn validate_pipeline(ops: &[Operation]) -> Result<(), String> {
         return Err("「擷取頁面」與「移除頁面」互相衝突，請只選一個".into());
     }
 
-    let mut seen: Vec<u8> = ops.iter().map(|o| o.order()).collect();
-    seen.sort_unstable();
-    let before = seen.len();
-    seen.dedup();
-    if seen.len() != before {
-        return Err("同一項功能不能重複勾選".into());
+    // 用型別本身判斷重複，不能拿 order() 當識別——不同功能可以共用同一個順序，
+    // 例如入口轉換的兩個工具。Discriminant 沒有排序，所以逐一比對而不是 sort+dedup
+    // （dedup 只會移除相鄰的重複，不排序的話根本抓不到）。
+    let mut seen: Vec<std::mem::Discriminant<Operation>> = Vec::with_capacity(ops.len());
+    for op in ops {
+        let d = std::mem::discriminant(op);
+        if seen.contains(&d) {
+            return Err(format!("「{}」不能重複勾選", op.label()));
+        }
+        seen.push(d);
     }
     Ok(())
 }
@@ -240,6 +261,8 @@ struct Engines {
     libreoffice: Option<String>,
     /// 獨立的擴充包，沒有屬正常情況。
     pyext: Option<String>,
+    /// 隨程式打包，負責加解密。
+    qpdf: Option<String>,
 }
 
 #[tauri::command]
@@ -248,6 +271,7 @@ fn engine_status(state: State<'_, AppState>) -> Engines {
         ghostscript: state.gs.as_ref().and_then(|p| gs::version(p).ok()),
         libreoffice: state.office.as_ref().and_then(|p| office::version(p).ok()),
         pyext: state.pyext.as_ref().and_then(|p| pyext::version(p).ok()),
+        qpdf: state.qpdf.as_ref().and_then(|p| crypt::version(p).ok()),
     }
 }
 
@@ -445,6 +469,9 @@ async fn run_pipeline(
         return Err("找不到 LibreOffice。Office 轉檔需要先安裝它，安裝後請重新啟動本程式".into());
     }
 
+    if ops.iter().any(Operation::needs_qpdf) && state.qpdf.is_none() {
+        return Err("找不到加密引擎（qpdf），安裝檔可能不完整".into());
+    }
     if ops.iter().any(Operation::needs_pyext) && state.pyext.is_none() {
         return Err(
             "PDF 轉 Word 需要另外安裝擴充包（約 100 MB）。安裝後請重新啟動本程式".into(),
@@ -455,6 +482,7 @@ async fn run_pipeline(
     let gs = state.gs.clone();
     let office = state.office.clone();
     let pyext = state.pyext.clone();
+    let qpdf = state.qpdf.clone();
     let source_name = file_name(&PathBuf::from(&paths[0]), &paths[0]);
     let orig_bytes: u64 = paths
         .iter()
@@ -488,8 +516,14 @@ async fn run_pipeline(
                 batch.iter().map(|i| i.path.to_string_lossy().to_string()).collect();
             let carried = batch[0].suffix.clone();
 
-            let (op2, gs, office, pyext, root) =
-                (op.clone(), gs.clone(), office.clone(), pyext.clone(), root.clone());
+            let (op2, gs, office, pyext, qpdf, root) = (
+                op.clone(),
+                gs.clone(),
+                office.clone(),
+                pyext.clone(),
+                qpdf.clone(),
+                root.clone(),
+            );
             let outcome = tauri::async_runtime::spawn_blocking(move || {
                 // 失敗時這一階段已建立的 Ephemeral 全部在此被 Drop 抹除。
                 execute(
@@ -499,6 +533,7 @@ async fn run_pipeline(
                         gs: gs.as_deref(),
                         office: office.as_deref(),
                         pyext: pyext.as_deref(),
+                        qpdf: qpdf.as_deref(),
                     },
                     &root,
                 )
@@ -575,6 +610,7 @@ struct Tools<'a> {
     gs: Option<&'a Path>,
     office: Option<&'a Path>,
     pyext: Option<&'a Path>,
+    qpdf: Option<&'a Path>,
 }
 
 /// 實際執行一次操作。跑在 blocking pool 上。
@@ -707,10 +743,22 @@ fn execute(op: &Operation, batch: &[String], tools: Tools, root: &Path) -> Resul
             markdown::to_markdown(gs, &src, out.0.path())?;
             Ok(vec![out])
         }
-        Operation::PdfToWord => {
+        Operation::Encrypt { user, owner } => {
+            let qpdf = tools.qpdf.ok_or("找不到加密引擎（qpdf）")?;
+            let out = one("_protected")?;
+            crypt::encrypt(qpdf, &src, out.0.path(), user, owner)?;
+            Ok(vec![out])
+        }
+        Operation::Decrypt { password } => {
+            let qpdf = tools.qpdf.ok_or("找不到加密引擎（qpdf）")?;
+            let out = one("_unlocked")?;
+            crypt::decrypt(qpdf, &src, out.0.path(), password)?;
+            Ok(vec![out])
+        }
+        Operation::PdfToWord { fallback_font } => {
             let py = tools.pyext.ok_or("需要安裝擴充包才能使用 PDF 轉 Word")?;
             let out = one("")?;
-            pyext::pdf_to_docx(py, &src, out.0.path())?;
+            pyext::pdf_to_docx(py, &src, out.0.path(), fallback_font)?;
             Ok(vec![out])
         }
         Operation::OfficeToPdf => {
@@ -805,7 +853,7 @@ mod tests {
         execute(
             op,
             &[src.to_string_lossy().into()],
-            Tools { gs: gs.as_deref(), office: office.as_deref(), pyext: py.as_deref() },
+            Tools { gs: gs.as_deref(), office: office.as_deref(), pyext: py.as_deref(), qpdf: crypt::locate(None).as_deref() },
             root,
         )
     }
@@ -983,7 +1031,7 @@ mod tests {
             return;
         }
         let root = eph_root();
-        let tools = Tools { gs: None, office: None, pyext: None };
+        let tools = Tools { gs: None, office: None, pyext: None, qpdf: None };
 
         // 先擷取 4 頁
         let picked = execute(
@@ -1123,6 +1171,7 @@ pub fn run() {
                 gs,
                 office: office::locate(),
                 pyext: pyext::locate(resource_dir.as_deref()),
+                qpdf: crypt::locate(resource_dir.as_deref()),
                 eph_root,
                 jobs: Mutex::new(HashMap::new()),
             });
@@ -1151,3 +1200,6 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+
+

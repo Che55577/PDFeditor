@@ -201,6 +201,38 @@
           掃描件沒有可抽取的文字，需要先做 OCR。
         </p>
 
+        <div class="stack" data-for="decrypt">
+          <label class="field">
+            <span>目前的密碼</span>
+            <input id="decPassword" type="password" placeholder="開啟這份 PDF 需要的密碼" />
+          </label>
+          <p class="hint">需要你提供正確密碼。本程式不做任何密碼破解。</p>
+        </div>
+
+        <div class="stack" data-for="encrypt">
+          <div class="grid">
+            <label class="field">
+              <span>開啟密碼</span>
+              <input id="encUser" type="password" placeholder="開檔時要輸入的密碼" />
+            </label>
+            <label class="field">
+              <span>擁有者密碼（可留空）</span>
+              <input id="encOwner" type="password" placeholder="留空則沿用開啟密碼" />
+            </label>
+          </div>
+          <p class="hint">
+            使用 AES-256。擁有者密碼管的是列印與複製這類權限；留空會沿用開啟密碼，
+            因為真的留空等於任何人都能移除保護。
+          </p>
+        </div>
+
+        <div class="stack" data-for="pdftoword">
+          <label class="field">
+            <span>找不到對應字型時改用</span>
+            <select id="wordFont" class="fontpick"></select>
+          </label>
+        </div>
+
         <p class="hint" data-for="pdftoword">
           產出<strong>真段落</strong>的 Word 檔（不是一堆浮動文字方塊），表格會被還原成 Word 表格。
           <br />
