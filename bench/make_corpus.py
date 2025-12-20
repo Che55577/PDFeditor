@@ -124,7 +124,57 @@ def c3_mixed(pages=20):
     return path
 
 
+def c4_vector(pages=2):
+    """向量圖形型：條碼、細線、色塊。
+
+    這類內容在 PDF 裡是一堆極細的填色矩形，不是點陣圖。轉檔工具常常把它們
+    當成雜訊丟掉——使用者看到的就是「條碼不見了」。
+    """
+    from reportlab.graphics.barcode import code128, qr
+    from reportlab.graphics.shapes import Drawing
+
+    pdfmetrics.registerFont(TTFont("CJK", CJK_TTF))
+    path = OUT / "c4_vector.pdf"
+    c = canvas.Canvas(str(path), pagesize=A4)
+    w, h = A4
+
+    for p in range(pages):
+        c.setFont("CJK", 16)
+        c.drawString(50, h - 60, f"出貨單　第 {p + 1} 聯")
+
+        # Code128 條碼：由寬窄不一的細長矩形組成，最細的只有零點幾 pt
+        bc = code128.Code128(f"LPDF{p + 1:06d}", barHeight=42, barWidth=0.9)
+        bc.drawOn(c, 50, h - 130)
+        c.setFont("CJK", 9)
+        c.drawString(50, h - 145, f"LPDF{p + 1:06d}")
+
+        # QR 碼：大量小方塊
+        d = Drawing(90, 90)
+        d.add(qr.QrCodeWidget(f"https://example.invalid/{p}", barWidth=90, barHeight=90))
+        d.drawOn(c, w - 150, h - 175)
+
+        # 細線表格框與分隔線
+        c.setLineWidth(0.4)
+        for i in range(5):
+            y = h - 220 - i * 26
+            c.line(50, y, w - 50, y)
+        c.setLineWidth(0.25)
+        c.line(50, h - 200, 50, h - 340)
+        c.line(w - 50, h - 200, w - 50, h - 340)
+
+        # 實心色塊當作簽章區底色
+        c.setFillColorRGB(0.85, 0.9, 0.97)
+        c.rect(50, h - 430, 200, 60, fill=1, stroke=0)
+        c.setFillColorRGB(0, 0, 0)
+        c.setFont("CJK", 10.5)
+        c.drawString(60, h - 400, "簽收欄")
+
+        c.showPage()
+    c.save()
+    return path
+
+
 if __name__ == "__main__":
-    for fn in (c1_text, c2_scan, c3_mixed):
+    for fn in (c1_text, c2_scan, c3_mixed, c4_vector):
         p = fn()
         print(f"{p.name:16} {p.stat().st_size / 1024 / 1024:8.2f} MB")
