@@ -125,10 +125,15 @@ def c3_mixed(pages=20):
 
 
 def c4_vector(pages=2):
-    """向量圖形型：條碼、細線、色塊。
+    """向量圖形型：條碼、QR、向量商標、細線表格、色塊。
 
     這類內容在 PDF 裡是一堆極細的填色矩形，不是點陣圖。轉檔工具常常把它們
     當成雜訊丟掉——使用者看到的就是「條碼不見了」。
+
+    這份語料同時要能分辨三種東西，難就難在它們都由向量路徑構成：
+    * **密集圖形**（條碼、QR）——要保住，靠路徑密度認得出來
+    * **稀疏圖形**（商標）——要保住，但密度和框線一樣低，只能靠有曲線認出來
+    * **框線**（細線表格、色塊）——不能動，動了表格就變成一張圖
     """
     from reportlab.graphics.barcode import code128, qr
     from reportlab.graphics.shapes import Drawing
@@ -161,6 +166,26 @@ def c4_vector(pages=2):
         c.setLineWidth(0.25)
         c.line(50, h - 200, 50, h - 340)
         c.line(w - 50, h - 200, w - 50, h - 340)
+
+        # 向量商標：路徑少、攤得開，密度遠低於條碼——刻意用來測「稀疏向量圖形」。
+        # 有貝茲曲線，這是它和表格框線最好認的差別（框線只有直線與矩形）。
+        # 位置刻意避開表格框線：兩者靠太近會被併成同一個群集，就分不出誰是誰了。
+        cx, cy = w - 140, h - 405
+        c.saveState()
+        c.setStrokeColorRGB(0.1, 0.35, 0.6)
+        c.setFillColorRGB(0.1, 0.35, 0.6)
+        c.setLineWidth(3)
+        p_ = c.beginPath()
+        p_.moveTo(cx - 40, cy)
+        p_.curveTo(cx - 40, cy + 40, cx + 40, cy + 40, cx + 40, cy)
+        p_.curveTo(cx + 40, cy - 40, cx - 40, cy - 40, cx - 40, cy)
+        c.drawPath(p_, stroke=1, fill=0)
+        p_ = c.beginPath()
+        p_.moveTo(cx - 30, cy)
+        p_.curveTo(cx - 10, cy + 20, cx + 10, cy - 20, cx + 30, cy)
+        c.drawPath(p_, stroke=1, fill=0)
+        c.circle(cx, cy, 6, stroke=0, fill=1)
+        c.restoreState()
 
         # 實心色塊當作簽章區底色
         c.setFillColorRGB(0.85, 0.9, 0.97)

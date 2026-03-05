@@ -1,14 +1,18 @@
-"""找出讓 pdf2docx 保住條碼等向量圖形的設定。
+"""量條碼等向量圖形在 PDF → Word 之後保住了沒有。
 
-條碼在 PDF 裡不是點陣圖，是一堆極細的填色矩形。pdf2docx 預設會把太細的形狀
-當成雜訊丟掉（`shape_min_dimension`），也只在向量路徑佔比夠高時才把整塊區域
-點陣化（`curve_path_ratio`）——結果就是使用者說的「條碼不見了」。
+條碼在 PDF 裡不是點陣圖，是一堆極細的填色矩形。**pdf2docx 沒有任何設定救得回來**——
+它的資料模型只有文字、點陣圖、以及能變成表格框或底色的簡單形狀，任意向量圖形無處可去。
+第一輪掃過各種設定（`shape_min_dimension`、`min_svg_*`、`clip_image_res_ratio`）都是
+輸出圖片數 0；唯一有效的是關掉表格解析，SSIM 0.892 → 0.941，但條碼一樣沒了。
 
-這支程式對同一份語料試不同設定，量兩件事：
+所以真正的修法在 `scripts/pdf2word.py`：交給 pdf2docx 之前先把向量密集的區域點陣化。
+這支程式量的就是那個前處理的效果——刻意呼叫和產品同一支腳本，避免兩邊行為飄移。
+
+量兩件事：
 * 輸出的 docx 裡有幾張圖片（條碼若被點陣化保留，會是一張圖）
 * 來回轉回 PDF 後與原稿的 SSIM
 
-用系統 Python 執行，pdf2docx 那一步以子行程呼叫擴充包。
+用系統 Python 執行，轉檔那一步以子行程呼叫擴充包。
 用法: python bench/vector_loss.py
 """
 import json
@@ -24,52 +28,33 @@ from word_fidelity import compare, ghostscript, pyext_python, soffice  # noqa: E
 
 ROOT = Path(__file__).parent.parent
 CORPUS = ROOT / "bench" / "corpus"
+SCRIPT = ROOT / "scripts" / "pdf2word.py"
 PAGES = 1
 
-# pdf2docx 的版面設定。鍵名要用真的存在的——`Converter.default_settings` 才是準的，
+# 關掉表格解析：在這份語料上單獨就有 +0.05 SSIM，因為細線表格本來會被誤判。
+# 鍵名要用真的存在的——`Converter.default_settings` 才是準的，
 # 傳不存在的鍵會被安靜忽略（我第一次就傳了不存在的 curve_path_ratio，白測一輪）。
+NO_TABLE = {"parse_lattice_table": False, "parse_stream_table": False}
+
 PROFILES: dict[str, dict] = {
-    "預設": {},
-    "細形狀不丟": {"shape_min_dimension": 0.1},
-    "向量群組放寬": {"min_svg_w": 0.2, "min_svg_h": 0.2, "min_svg_gap_dx": 2.0, "min_svg_gap_dy": 0.5},
-    "關掉表格解析": {"parse_lattice_table": False, "parse_stream_table": False},
-    "關表格＋細形狀": {
-        "parse_lattice_table": False,
-        "parse_stream_table": False,
-        "shape_min_dimension": 0.1,
-    },
-    "全開": {
-        "parse_lattice_table": False,
-        "parse_stream_table": False,
-        "shape_min_dimension": 0.1,
-        "min_svg_w": 0.2,
-        "min_svg_h": 0.2,
-        "min_svg_gap_dx": 2.0,
-        "min_svg_gap_dy": 0.5,
-        "clip_image_res_ratio": 5.0,
-    },
+    "原樣（不點陣化）": {"keep_vector_art": False},
+    "只關表格解析": {"keep_vector_art": False, **NO_TABLE},
+    "點陣化向量圖形": {},
+    "點陣化＋關表格": dict(NO_TABLE),
 }
 
-CONVERT = """
-import sys, json, logging
-logging.disable(logging.INFO)
-from pdf2docx import Converter
-settings = json.loads(sys.argv[4])
-cv = Converter(sys.argv[1])
-try:
-    cv.convert(sys.argv[2], pages=list(range(int(sys.argv[3]))), **settings)
-finally:
-    cv.close()
-"""
 
-
-def to_docx(py: str, src: Path, dst: Path, pages: int, settings: dict) -> None:
+def to_docx(py: str, src: Path, dst: Path, pages: int, settings: dict) -> int:
+    """回傳腳本點陣化了幾塊。"""
+    settings = {"pages": list(range(pages)), **settings}
     result = subprocess.run(
-        [py, "-c", CONVERT, str(src), str(dst), str(pages), json.dumps(settings)],
+        [py, str(SCRIPT), str(src), str(dst), json.dumps(settings)],
         capture_output=True, text=True,
     )
     if result.returncode != 0 or not dst.exists():
         raise RuntimeError((result.stderr or "轉檔失敗").strip()[-300:])
+    # pdf2docx 匯入 fitz 會在 stdout 印棄用警告，數字在最後一行
+    return int((result.stdout.strip() or "0").splitlines()[-1])
 
 
 def count_images(docx: Path) -> int:
@@ -93,16 +78,16 @@ def main(src: Path):
         sys.exit(f"找不到 {src}，請先跑 python bench/make_corpus.py")
 
     print(f"=== {src.name} ===")
-    print(f"{'設定':22} {'圖片數':>6} {'SSIM':>8}")
-    print("-" * 40)
+    print(f"{'設定':18} {'點陣化':>6} {'圖片數':>6} {'SSIM':>8}")
+    print("-" * 46)
     for label, settings in PROFILES.items():
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             docx = work / "out.docx"
             try:
-                to_docx(py, src, docx, PAGES, settings)
+                blocks = to_docx(py, src, docx, PAGES, dict(settings))
             except RuntimeError as e:
-                print(f"{label:22} 失敗：{e}")
+                print(f"{label:18} 失敗：{e}")
                 continue
             images = count_images(docx)
             back = to_pdf(so, docx, work)
@@ -110,7 +95,7 @@ def main(src: Path):
             shutil.rmtree(work / "ref", ignore_errors=True)
             shutil.rmtree(work / "got", ignore_errors=True)
             avg = sum(scores) / len(scores) if scores else float("nan")
-            print(f"{label:22} {images:>6} {avg:>8.4f}")
+            print(f"{label:18} {blocks:>6} {images:>6} {avg:>8.4f}")
 
 
 if __name__ == "__main__":

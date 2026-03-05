@@ -1,7 +1,11 @@
-"""量 pdf2docx 的表格偵測準確率，用來決定 PDF → Excel 值不值得做。
+"""量表格偵測準確率，用來決定 PDF → Excel 值不值得做。
+
+同時是**向量點陣化的防呆測試**：`scripts/pdf2word.py` 會把向量密集的區域轉成圖片，
+表格框線一旦被誤判成圖形，整張表就會變成一張圖、文字全部拿不回來。所以這裡刻意
+走產品同一支腳本，並印出點陣化了幾塊——**表格語料這一欄必須是 0**。
 
 需要裝了 pdf2docx 的環境（見 docs/pdf-to-office.md）。
-用法: <venv>/Scripts/python.exe bench/table_bench.py
+用法: <pyext>/python.exe bench/table_bench.py
 """
 import json
 import logging
@@ -12,8 +16,10 @@ from pathlib import Path
 
 logging.disable(logging.INFO)
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
 from docx import Document  # noqa: E402
-from pdf2docx import Converter  # noqa: E402
+from pdf2word import convert  # noqa: E402
 
 CORPUS = Path(__file__).parent / "corpus"
 TRUTH = json.loads((CORPUS / "tables_truth.json").read_text(encoding="utf-8"))
@@ -68,8 +74,8 @@ def stitch(tables: list[list[list[str]]]) -> list[list[str]]:
 
 
 def main():
-    print(f"{'語料':22} {'秒':>5} {'表格數':>6} {'列×欄':>9} {'':>12} {'原始':>6} {'接合後':>8}")
-    print("-" * 74)
+    print(f"{'語料':22} {'秒':>5} {'點陣化':>6} {'表格數':>6} {'列×欄':>9} {'':>12} {'原始':>6} {'接合後':>8}")
+    print("-" * 82)
     for name, truth in TRUTH.items():
         src = CORPUS / name
         if not src.exists():
@@ -79,14 +85,12 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             dst = Path(tmp) / "out.docx"
             t0 = time.perf_counter()
-            cv = Converter(str(src))
-            cv.convert(str(dst))
-            cv.close()
+            rasterized = convert(src, dst, {})
             elapsed = time.perf_counter() - t0
             tables = extract_tables(dst)
 
         if not tables:
-            print(f"{name:22} {elapsed:5.1f} {0:>6} {'—':>10} {'完全沒偵測到':>12}")
+            print(f"{name:22} {elapsed:5.1f} {rasterized:>6} {0:>6} {'—':>10} {'完全沒偵測到':>12}")
             continue
 
         # 取最大的那個表格——這是「不做任何後處理」的基準。
@@ -101,7 +105,7 @@ def main():
         want = f"{truth['rows']}×{truth['cols']}"
         mark = "" if shape == want else f"(應為 {want})"
         print(
-            f"{name:22} {elapsed:5.1f} {len(tables):>6} {shape:>9}{mark:>12} "
+            f"{name:22} {elapsed:5.1f} {rasterized:>6} {len(tables):>6} {shape:>9}{mark:>12} "
             f"{hit / total:>6.0%} {s_hit / s_total:>8.0%}"
         )
 

@@ -53,26 +53,24 @@ pub fn version(py: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// pdf2docx 的轉檔腳本。
+/// 轉檔腳本，和 bench 共用同一份原始碼。
 ///
-/// `logging.disable` 是必要的：pdf2docx 每頁都會印一行進度到 stderr，
-/// 一份幾百頁的文件會塞爆管線緩衝區。
-const CONVERT: &str = r#"
-import sys, logging
-logging.disable(logging.INFO)
-from pdf2docx import Converter
-cv = Converter(sys.argv[1])
-try:
-    cv.convert(sys.argv[2])
-finally:
-    cv.close()
-"#;
+/// 內嵌而不是隨擴充包安裝：擴充包 216 MB、更新一次很痛，而腳本會隨著量測結果調整。
+/// 綁在執行檔裡就不會出現「app 更新了但擴充包裡還是舊腳本」這種對不起來的組合，
+/// 量測與產品也保證跑的是同一段程式。
+///
+/// 腳本在交給 pdf2docx 之前會把向量密集的區域點陣化——條碼與 QR 碼在 pdf2docx 的
+/// 資料模型裡無處可去，不先轉成圖片就會整個消失。詳見 `scripts/pdf2word.py`。
+const CONVERT: &str = include_str!("../../scripts/pdf2word.py");
 
 /// PDF 轉 Word。
 ///
 /// 轉完會修一次字型名稱：pdf2docx 寫出的名稱常常在系統上不存在（實測 `DFKaiShu-SB-Estd-BF`
 /// 會變成 `DFKai`），對不上就會退回預設字型，字寬一變整段重新換行——那就是「跑版」。
 /// 詳見 `docxfont`。
+///
+/// `output` **必須是 `Ephemeral` 的路徑**：腳本做向量前處理時會在它旁邊開一個
+/// `.prep.pdf` 中間檔，硬砍行程時要靠啟動掃除清掉。
 pub fn pdf_to_docx(py: &Path, input: &Path, output: &Path, fallback_font: &str) -> Result<()> {
     let result = build_cmd(py)
         .arg("-c")
@@ -154,6 +152,35 @@ mod tests {
             !xml.contains(r#"w:eastAsia="DFKai""#),
             "字型名稱應該已被換成實際安裝的字型"
         );
+    }
+
+    /// 條碼與 QR 碼在 pdf2docx 的資料模型裡無處可去，會整個消失。
+    /// 唯一救得回來的辦法是先點陣化，所以這裡守的是那條前處理路徑。
+    #[test]
+    fn barcodes_survive_as_images() {
+        let (Some(py), Some(src)) = (locate(None), corpus("c4_vector.pdf")) else {
+            eprintln!("跳過：沒有安裝擴充包或語料，見 scripts/build-pyext.py");
+            return;
+        };
+        let dir = workdir("vector");
+        let out = dir.join("out.docx");
+        pdf_to_docx(&py, &src, &out, "標楷體").unwrap();
+
+        let file = std::fs::File::open(&out).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let images = (0..zip.len())
+            .filter(|i| zip.by_index(*i).unwrap().name().starts_with("word/media/"))
+            .count();
+        assert!(images >= 2, "條碼與 QR 應該各留下一張圖，實際只有 {images} 張");
+
+        // 前處理的中間檔開在輸出檔旁邊，不清掉就等於把來源內容留在磁碟上。
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".prep.pdf"))
+            .collect();
+        assert!(leftovers.is_empty(), "中間檔沒有清掉：{leftovers:?}");
     }
 
     #[test]
