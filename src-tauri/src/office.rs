@@ -36,6 +36,7 @@ pub fn is_supported(path: &Path) -> bool {
 /// 優先取 `soffice.com` 而不是 `soffice.exe`：在 Windows 上 `.exe` 是視窗版啟動器，
 /// 下完命令會立刻返回，我們會在轉檔還沒完成時就去讀輸出檔。`.com` 是主控台版，
 /// 會確實等到轉檔結束。
+#[cfg(windows)]
 pub fn locate() -> Option<PathBuf> {
     let bases = [
         std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()),
@@ -50,6 +51,45 @@ pub fn locate() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// macOS：App 套件裡的 `soffice` 本身就是主控台程式，`--convert-to` 會等到轉檔結束才返回。
+#[cfg(target_os = "macos")]
+pub fn locate() -> Option<PathBuf> {
+    const INNER: &str = "LibreOffice.app/Contents/MacOS/soffice";
+    let mut candidates = vec![Path::new("/Applications").join(INNER)];
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(Path::new(&home).join("Applications").join(INNER));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn locate() -> Option<PathBuf> {
+    crate::platform::find_on_system("soffice")
+}
+
+/// 把本機路徑轉成 LibreOffice `-env:UserInstallation` 要的 file URL。
+///
+/// Windows 的 `C:/x` 要寫成 `file:///C:/x`；Unix 的 `/x` 寫成 `file:///x`（不能多一條斜線）。
+/// 空白一定要編碼——macOS 的暫存根目錄在 `~/Library/Application Support/` 底下。
+fn file_url(path: &Path) -> String {
+    let raw = path.display().to_string().replace('\\', "/");
+    let mut encoded = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '%' => encoded.push_str("%25"),
+            ' ' => encoded.push_str("%20"),
+            '#' => encoded.push_str("%23"),
+            '?' => encoded.push_str("%3F"),
+            _ => encoded.push(c),
+        }
+    }
+    if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        format!("file:///{encoded}")
+    }
 }
 
 pub fn version(soffice: &Path) -> Result<String> {
@@ -79,7 +119,7 @@ pub fn to_pdf(soffice: &Path, input: &Path, workdir: &Path, output: &Path) -> Re
 
     // 用獨立的使用者設定檔，避免使用者自己開著的 LibreOffice 攔截這次轉檔請求
     // ——共用設定檔時，既有實例會接手命令然後我們永遠等不到輸出。
-    let profile_url = format!("file:///{}", profile.display().to_string().replace('\\', "/"));
+    let profile_url = file_url(&profile);
 
     let mut cmd = Command::new(soffice);
     #[cfg(windows)]
@@ -134,6 +174,16 @@ mod tests {
         assert!(is_supported(Path::new("A.XLSX")));
         assert!(!is_supported(Path::new("a.pdf")));
         assert!(!is_supported(Path::new("noext")));
+    }
+
+    #[test]
+    fn file_url_handles_both_path_styles() {
+        assert_eq!(file_url(Path::new(r"C:\Users\a\eph")), "file:///C:/Users/a/eph");
+        assert_eq!(
+            file_url(Path::new("/Users/a/Library/Application Support/x")),
+            "file:///Users/a/Library/Application%20Support/x"
+        );
+        assert_eq!(file_url(Path::new("/tmp/100%#?")), "file:///tmp/100%25%23%3F");
     }
 
     #[test]

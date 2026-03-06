@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { join } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
@@ -621,7 +622,8 @@ async function saveAll() {
   let saved = 0;
   for (const r of results.filter((x) => !x.error)) {
     try {
-      await invoke("save_job", { id: r.id, dest: `${dir}\\${r.name}` });
+      // 用平台的分隔符組路徑——寫死 `\\` 在 macOS 會變成檔名的一部分
+      await invoke("save_job", { id: r.id, dest: await join(dir, r.name) });
       results = results.filter((x) => x.id !== r.id);
       saved++;
     } catch (e) {

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- WebKit 的 WASM JIT（MuPDF）與 Python 擴充包的原生模組都需要 -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- 使用者可能把獨立安裝的 Python 擴充包放到 App 旁邊；開啟 library validation
+         會在擴充包以不同憑證（或 ad-hoc）簽章時拒絕載入其中的 .so/.dylib -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

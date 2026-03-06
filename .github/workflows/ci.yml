@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Ghostscript 在 macOS 上要從原始碼編譯（約 2~3 分鐘），快取起來省下重編時間
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/ghostscript
+            vendor/qpdf
+          key: vendor-${{ runner.os }}-${{ runner.arch }}-gs10.07.1-qpdf12.4.2
+
+      - name: 安裝前端相依與同步 MuPDF
+        run: npm ci
+
+      - name: 取得 Ghostscript 與 qpdf
+        run: npm run fetch:vendor
+
+      - name: 前端型別檢查與打包
+        run: npm run build
+
+      - name: Rust 測試
+        run: cargo test --manifest-path src-tauri/Cargo.toml

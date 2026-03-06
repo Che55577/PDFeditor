@@ -119,7 +119,11 @@ MuPDF 用 `new URL("mupdf-wasm.wasm", import.meta.url)` 找自己的 WASM，經�
 沒裝就在界面上明確標示該功能不可用。要用 Office 轉檔請自行安裝：
 
 ```powershell
+# Windows
 winget install --id TheDocumentFoundation.LibreOffice -e
+
+# macOS
+brew install --cask libreoffice
 ```
 
 **只做 Office → PDF 這個方向。** 反方向（PDF → Word/Excel）LibreOffice 也做得到，但它是透過
@@ -148,8 +152,8 @@ lopdf 沒有 C 相依，之後移植 Android 時這一半的功能可以直接�
 ## 隱私設計
 
 - **不連網**。程式碼中沒有任何 HTTP client 依賴。
-- **暫存範圍受控**。所有落地的中間檔案只出現在 `%LOCALAPPDATA%\com.localpdf.app\eph\`，亂數命名、無副檔名
-  （避免檔案總管與索引服務去讀取內容產生縮圖）。
+- **暫存範圍受控**。所有落地的中間檔案只出現在受管理的暫存目錄（Windows：`%LOCALAPPDATA%\com.localpdf.app\eph\`；macOS：`~/Library/Application Support/com.localpdf.app/eph/`），亂數命名、無副檔名
+  （避免檔案總管／Finder 與索引服務去讀取內容產生縮圖）。
 - **三道抹除保險**：
   1. `Ephemeral` 的 `Drop` 實作——處理失敗、使用者取消、甚至程式 panic，暫存檔都會被抹除
   2. 存檔時同磁碟用 `rename`（原子操作，不留第二份內容），跨磁碟則複製後立刻抹除來源
@@ -180,27 +184,28 @@ lopdf 沒有 C 相依，之後移植 Android 時這一半的功能可以直接�
 ⚠️ **這也代表用色塊蓋住敏感資料並不安全**——被蓋住的內容仍然完整躺在檔案裡，用文字抽取
 工具一撈就出來。要遮蔽請用「塗黑」（見上一節），不要用手繪或圖章畫黑框。
 
-### 已知的次要表面：WebView2 profile
+### 已知的次要表面：系統 WebView profile
 
-Tauri 在 Windows 使用系統的 WebView2，它會在 `%LOCALAPPDATA%\com.localpdf.app\EBWebView\`
-建立一份完整的 Chromium profile 目錄（`Cookies`、`History`、`Login Data` 等）。本程式只載入內嵌的
+Tauri 在 Windows 使用系統的 WebView2（`%LOCALAPPDATA%\com.localpdf.app\EBWebView\`），在 macOS 使用系統的 WKWebView（`~/Library/WebKit/com.localpdf.app/`），
+兩者都會建立一份瀏覽器 profile 目錄（`Cookies`、`History` 等）。本程式只載入內嵌的
 本機頁面、不做任何網路導覽，所以這些檔案實際上都是空殼，**不會包含你的 PDF 內容**。
 
-但對一個宣稱資料不外傳的工具而言，這仍是應該講明的表面。待辦：評估把 WebView2 的
+但對一個宣稱資料不外傳的工具而言，這仍是應該講明的表面。待辦：評估把 WebView 的
 user data folder 指向暫存位置並在結束時一併清除。
 
 ### 誠實聲明
 
 在 SSD 與快閃記憶體上，因為 wear-leveling 與 TRIM，**「覆寫刪除」無法保證原始資料真的被抹除**。
 本程式的覆寫是盡力而為。真正的保障是：暫存存在時間極短、範圍受控、且全程不連網。
-若你的威脅模型需要更高保障，請搭配全磁碟加密（BitLocker）。
+若你的威脅模型需要更高保障，請搭配全磁碟加密（Windows：BitLocker；macOS：FileVault）。
 
 ## 開發
 
-需要 Node 20+、Rust stable、MSVC Build Tools。
+需要 Node 20+、Rust stable，以及平台的 C 編譯工具（Windows：MSVC Build Tools；macOS：`xcode-select --install`）。
 
-```
+```bash
 npm install
+npm run fetch:vendor   # 取得 Ghostscript（24 MB）與 qpdf（8.7 MB），見 vendor/README.md
 npm run tauri dev
 ```
 
@@ -209,7 +214,7 @@ npm run tauri dev
 `ERR_CONNECTION_REFUSED`。要獨立執行請用 `npm run tauri build` 產生的 release 版，
 那才會把前端資產內嵌進執行檔。
 
-`vendor/ghostscript/` 是壓縮引擎（約 40 MB，未進版控）。取得方式見 `vendor/README.md`。
+在 macOS 上打包後，請執行 `bash scripts/sign-macos.sh` 對 `.app` 內嵌的 `gs`、`qpdf` 與擴充包做由內而外的完整簽章（未設定 `APPLE_SIGNING_IDENTITY` 時使用 ad-hoc 簽章供本機測試，設定後啟用 Hardened Runtime 供公證發佈）。
 
 ## 壓縮參數怎麼定的
 

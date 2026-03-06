@@ -358,12 +358,12 @@ fn merge_resource(
 mod tests {
     use super::*;
 
-    const KAIU: &str = r"C:\Windows\Fonts\kaiu.ttf";
-
+    /// 系統上第一個中文字型（Windows 是標楷體，macOS 是蘋方等）。
     fn style() -> TextStyle {
+        let f = crate::platform::cjk_test_font().expect("呼叫前已用 corpus() 確認有中文字型");
         TextStyle {
-            font_path: PathBuf::from(KAIU),
-            font_index: 0,
+            font_path: f.path,
+            font_index: f.index,
             size: 48.0,
             color: [0.5, 0.5, 0.5],
             opacity: 0.3,
@@ -374,7 +374,7 @@ mod tests {
         let p = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()?
             .join("bench/corpus/c1_text.pdf");
-        (p.exists() && Path::new(KAIU).exists()).then_some(p)
+        (p.exists() && crate::platform::cjk_test_font().is_some()).then_some(p)
     }
 
     fn tmp(tag: &str) -> PathBuf {
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn watermark_keeps_page_count_and_grows_file() {
         let Some(src) = corpus() else {
-            eprintln!("跳過：需要語料與標楷體");
+            eprintln!("跳過：需要語料與中文字型");
             return;
         };
         let out = tmp("wm");

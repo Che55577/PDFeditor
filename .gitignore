@@ -23,8 +23,9 @@ dist-ssr
 *.sln
 *.sw?
 
-# 壓縮引擎（約 40MB，取得方式見 vendor/README.md）
+# 第三方執行檔（約 33MB，由 npm run fetch:vendor 取得，見 vendor/README.md）
 vendor/ghostscript/
+vendor/qpdf/
 
 # MuPDF 的執行期檔案（約 10MB），由 npm run sync:mupdf 從 node_modules 複製
 public/mupdf/

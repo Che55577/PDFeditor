@@ -8,6 +8,7 @@ mod images;
 mod markdown;
 mod office;
 mod pages;
+mod platform;
 mod pyext;
 
 use std::collections::HashMap;
@@ -283,27 +284,16 @@ struct FontChoice {
 }
 
 /// 系統上可用的字型。浮水印與頁碼要內嵌字型，中文尤其挑不得。
+///
+/// 候選清單依平台而異（見 `platform::available_fonts`）。
 #[tauri::command]
 fn list_fonts() -> Vec<FontChoice> {
-    // 標楷體排第一：它是單一 TTF（好處理），而且是台灣公文書最常用的字體。
-    const CANDIDATES: &[(&str, &str, u32)] = &[
-        ("標楷體", "kaiu.ttf", 0),
-        ("微軟正黑體", "msjh.ttc", 0),
-        ("新細明體", "mingliu.ttc", 0),
-        ("Arial", "arial.ttf", 0),
-        ("Calibri", "calibri.ttf", 0),
-    ];
-    let dir = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
-        .join("Fonts");
-    CANDIDATES
-        .iter()
-        .filter_map(|(label, file, index)| {
-            let path = dir.join(file);
-            path.exists().then(|| FontChoice {
-                label: label.to_string(),
-                path: path.to_string_lossy().to_string(),
-                index: *index,
-            })
+    platform::available_fonts()
+        .into_iter()
+        .map(|f| FontChoice {
+            label: f.label,
+            path: f.path.to_string_lossy().to_string(),
+            index: f.index,
         })
         .collect()
 }

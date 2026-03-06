@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "sync:mupdf": "node scripts/sync-mupdf.mjs",
+    "fetch:vendor": "node scripts/fetch-vendor.mjs",
     "postinstall": "node scripts/sync-mupdf.mjs",
     "predev": "node scripts/sync-mupdf.mjs",
     "dev": "vite",
@@ -16,7 +17,6 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.2",
-    "@tauri-apps/plugin-opener": "^2",
     "mupdf": "^1.28.0"
   },
   "devDependencies": {

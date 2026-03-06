@@ -18,21 +18,11 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 type Result<T> = std::result::Result<T, String>;
 
-/// 找出擴充包裡的 Python。
+/// 找出擴充包裡的 Python（Windows：`pyext/python.exe`；macOS：`pyext/bin/python3`）。
+///
+/// 開發時在專案根目錄的 vendor/；安裝後擴充包會落在程式目錄底下。
 pub fn locate(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(res) = resource_dir {
-        candidates.push(res.join("pyext/python.exe"));
-    }
-    // 開發時：專案根目錄的 vendor/
-    if let Ok(exe) = std::env::current_exe() {
-        for up in exe.ancestors().take(6) {
-            candidates.push(up.join("vendor/pyext/python.exe"));
-            // 安裝後擴充包會落在程式目錄底下
-            candidates.push(up.join("pyext/python.exe"));
-        }
-    }
-    candidates.into_iter().find(|p| p.exists())
+    crate::platform::find_bundled(resource_dir, crate::platform::bin::PYTHON, true)
 }
 
 fn build_cmd(py: &Path) -> Command {

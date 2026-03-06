@@ -218,16 +218,19 @@ fn subset_tag(subset: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    const KAIU: &str = r"C:\Windows\Fonts\kaiu.ttf";
+    /// 系統上第一個中文字型（Windows 是標楷體，macOS 是蘋方等）。
+    fn test_font() -> Option<crate::platform::FontFace> {
+        crate::platform::cjk_test_font()
+    }
 
     fn font() -> Option<Font> {
-        Path::new(KAIU).exists().then(|| Font::load(Path::new(KAIU), 0).unwrap())
+        test_font().map(|f| Font::load(&f.path, f.index).unwrap())
     }
 
     #[test]
     fn prepare_encodes_and_measures() {
         let Some(mut f) = font() else {
-            eprintln!("跳過：找不到標楷體");
+            eprintln!("跳過：找不到中文字型");
             return;
         };
         let p = f.prepare("測試").unwrap();
@@ -250,7 +253,7 @@ mod tests {
         let Some(mut f) = font() else { return };
         f.prepare("機密文件").unwrap();
 
-        let original = std::fs::metadata(KAIU).unwrap().len();
+        let original = std::fs::metadata(test_font().unwrap().path).unwrap().len();
         let subset = subsetter::subset(&f.data, f.index, &f.remapper).unwrap();
         assert!(
             (subset.len() as u64) < original / 20,

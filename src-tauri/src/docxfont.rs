@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -51,10 +51,15 @@ fn has_cjk(s: &str) -> bool {
 
 /// 掃描系統字型目錄，一個字型檔收成一個 [`Family`]。
 pub fn installed_families() -> Vec<Family> {
-    let dir = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
-        .join("Fonts");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
     let mut out: Vec<Family> = Vec::new();
+    for dir in crate::platform::font_dirs() {
+        collect_families(&dir, &mut out);
+    }
+    out
+}
+
+fn collect_families(dir: &Path, out: &mut Vec<Family>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -99,7 +104,6 @@ pub fn installed_families() -> Vec<Family> {
             }
         }
     }
-    out
 }
 
 /// 名稱正規化：去掉 PDF 子集前綴、空白與連字號，再轉小寫。
@@ -229,7 +233,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_common_windows_families() {
+    fn finds_common_system_families() {
         let installed = installed_families();
         if installed.is_empty() {
             eprintln!("跳過：讀不到系統字型");

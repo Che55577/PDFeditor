@@ -21,16 +21,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 type Result<T> = std::result::Result<T, String>;
 
 pub fn locate(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(res) = resource_dir {
-        candidates.push(res.join("qpdf/qpdf.exe"));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        for up in exe.ancestors().take(6) {
-            candidates.push(up.join("vendor/qpdf/qpdf.exe"));
-        }
-    }
-    candidates.into_iter().find(|p| p.exists())
+    let bundled = crate::platform::find_bundled(resource_dir, crate::platform::bin::QPDF, false);
+    #[cfg(not(windows))]
+    let bundled = bundled.or_else(|| crate::platform::find_on_system("qpdf"));
+    bundled
 }
 
 pub fn version(qpdf: &Path) -> Result<String> {

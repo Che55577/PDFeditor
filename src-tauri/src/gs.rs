@@ -92,26 +92,19 @@ fn base_args() -> Vec<&'static str> {
     ]
 }
 
-/// 依序在幾個位置找 gswin64c.exe。
+/// 依序在幾個位置找 Ghostscript（Windows：`gswin64c.exe`；macOS：`gs`）。
 ///
 /// `resource_dir` 是打包後隨 App 附帶的位置；開發時會落到 vendor/ 或系統安裝。
 pub fn locate(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = crate::platform::find_bundled(resource_dir, crate::platform::bin::GHOSTSCRIPT, false) {
+        return Some(p);
+    }
+    locate_system()
+}
 
-    if let Some(res) = resource_dir {
-        candidates.push(res.join("ghostscript/bin/gswin64c.exe"));
-    }
-    // 開發時：專案根目錄的 vendor/
-    if let Ok(exe) = std::env::current_exe() {
-        for up in exe.ancestors().take(6) {
-            candidates.push(up.join("vendor/ghostscript/bin/gswin64c.exe"));
-        }
-    }
-    if let Some(p) = candidates.iter().find(|p| p.exists()) {
-        return Some(p.clone());
-    }
-
-    // 最後才找系統安裝的版本（開發用；正式版一律使用內嵌的，避免版本行為飄移）
+/// 最後才找系統安裝的版本（開發用；正式版一律使用內嵌的，避免版本行為飄移）
+#[cfg(windows)]
+fn locate_system() -> Option<PathBuf> {
     for base in [r"C:\Program Files\gs", r"C:\Program Files (x86)\gs"] {
         let Ok(dir) = std::fs::read_dir(base) else { continue };
         let mut versions: Vec<PathBuf> = dir
@@ -125,6 +118,11 @@ pub fn locate(resource_dir: Option<&Path>) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(not(windows))]
+fn locate_system() -> Option<PathBuf> {
+    crate::platform::find_on_system("gs")
 }
 
 /// 回傳 Ghostscript 版本字串，用來在啟動時確認引擎可用。
