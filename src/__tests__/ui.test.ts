@@ -191,4 +191,34 @@ describe("LocalPDF Frontend & UI Integration Tests", () => {
     expect(invokeMock).toHaveBeenCalledWith("cancel_pipeline");
     expect(statusEl.textContent).toContain("正在取消操作");
   });
+
+  it("renders #pageOrganizer thumbnail grid and syncs page selection & reordering to #extractPages", async () => {
+    openMock.mockResolvedValueOnce(["/tmp/contract.pdf"]);
+    const browseBtn = document.getElementById("browse") as HTMLButtonElement;
+    browseBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const extractInput = document.querySelector<HTMLInputElement>(
+      '.toolcard[data-tool="extract"] input',
+    )!;
+    extractInput.checked = true;
+    extractInput.dispatchEvent(new Event("change"));
+
+    const orgEl = document.getElementById("pageOrganizer") as HTMLElement;
+    const extractField = document.getElementById("extractPages") as HTMLInputElement;
+    expect(orgEl.hidden).toBe(false);
+    expect(extractField.value).toBe("1, 2, 3, 4, 5");
+
+    // Toggle off page 2 by clicking its card
+    const card2 = document.querySelector<HTMLElement>('#orgGrid .pagecard[data-page="2"]')!;
+    card2.click();
+    expect(extractField.value).toBe("1, 3, 4, 5");
+
+    // Move page 3 to the front using its ← button
+    const card3Right = document.querySelector<HTMLButtonElement>(
+      '#orgGrid .pagecard[data-page="1"] .org-right',
+    )!;
+    card3Right.click();
+    expect(extractField.value).toBe("2, 1, 3, 4, 5".replace("2, ", ""));
+  });
 });

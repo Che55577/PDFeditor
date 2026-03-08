@@ -67,6 +67,10 @@ export const UI_TEXT = {
     installPyext: "匯入擴充包 (.zip)",
     installingPyext: "正在驗證並安裝擴充包…",
     installedPyext: (ver: string) => `擴充包安裝完成（${ver}），「PDF 轉 Word」已啟用。`,
+    orgTitle: "視覺化頁面排版（點擊選取，拖曳或按 ← → 調整順序）",
+    orgSelectAll: "全選",
+    orgClearSel: "全不選",
+    orgResetOrder: "重設順序",
   },
   en: {
     sub: "Files never leave this device. Temporary outputs are wiped immediately after saving or closing.",
@@ -92,5 +96,9 @@ export const UI_TEXT = {
     installPyext: "Import Extension (.zip)",
     installingPyext: "Verifying and installing extension pack…",
     installedPyext: (ver: string) => `Extension installed (${ver}). PDF to Word is now ready.`,
+    orgTitle: "Visual Page Organizer (click to toggle, drag or use ← → to reorder)",
+    orgSelectAll: "Select All",
+    orgClearSel: "Clear Selection",
+    orgResetOrder: "Reset Order",
   },
 };

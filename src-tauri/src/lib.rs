@@ -1,15 +1,16 @@
-mod annotate;
-mod crypt;
-mod docxfont;
-mod ephemeral;
-mod font;
-mod gs;
-mod images;
-mod markdown;
-mod office;
-mod pages;
-mod platform;
-mod pyext;
+pub mod annotate;
+pub mod cli;
+pub mod crypt;
+pub mod docxfont;
+pub mod ephemeral;
+pub mod font;
+pub mod gs;
+pub mod images;
+pub mod markdown;
+pub mod office;
+pub mod pages;
+pub mod platform;
+pub mod pyext;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -357,13 +358,18 @@ async fn inspect(paths: Vec<String>) -> Vec<FileInfo> {
 /// 36 dpi 就夠了：實測成本幾乎全在 Ghostscript 的行程啟動（約 180 ms），
 /// 提高解析度並不會變慢多少，但檔案會變大。
 #[tauri::command]
-async fn thumbnail(state: State<'_, AppState>, path: String) -> Result<tauri::ipc::Response, String> {
+async fn thumbnail(
+    state: State<'_, AppState>,
+    path: String,
+    page: Option<u32>,
+) -> Result<tauri::ipc::Response, String> {
     let gs = state.gs.clone().ok_or("找不到算圖引擎")?;
     let root = state.eph_root.clone();
+    let page_num = page.unwrap_or(1).max(1);
 
     let bytes = tauri::async_runtime::spawn_blocking(move || {
         let eph = Ephemeral::new(&root).map_err(|e| format!("無法建立暫存檔：{e}"))?;
-        gs::render_page(&gs, Path::new(&path), 1, 36, gs::ImageFormat::Jpeg, eph.path())?;
+        gs::render_page(&gs, Path::new(&path), page_num, 36, gs::ImageFormat::Jpeg, eph.path())?;
         // eph 在這個區塊結束時抹除，縮圖只以位元組形式離開。
         std::fs::read(eph.path()).map_err(|e| format!("讀不到縮圖：{e}"))
     })
