@@ -4,7 +4,7 @@
  * 這是**唯一會把檔案內容讀進 WebView 的相依**。其他工具的檔案內容都只存在於
  * Rust 那側，前端拿得到的僅有路徑。會開這個口是因為 MuPDF 只有 WASM 版可用——
  * 原生的 mupdf-rs 綑綁 C 原始碼、需要 libclang，且 Windows/MSVC 建置被回報不穩定。
- * 完整理由見 docs/edit-pdf-analysis.md 第 8.4 節。
+ * 完整理由見 docs/ARCHITECTURE.md。
  */
 
 export type MuPdf = typeof import("mupdf");

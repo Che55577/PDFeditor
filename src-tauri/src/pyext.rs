@@ -1,6 +1,6 @@
 //! Python 擴充包。
 //!
-//! PDF 轉 Word 只有 Python 生態有堪用的實作。實測過的兩條路（見 `docs/pdf-to-office.md`）：
+//! PDF 轉 Word 只有 Python 生態有堪用的實作。實測過的兩條路（見 `docs/ARCHITECTURE.md`）：
 //! LibreOffice 產出的是每個視覺行一個浮動文字方塊，改一個字整段版面就散；
 //! pdf2docx 產出真段落、零文字方塊，表格偵測在乾淨的數位 PDF 上準確率 100%。
 //!
@@ -8,6 +8,7 @@
 //! 要用的人才裝。這是一次性下載安裝，不是執行期連網取件，
 //! 「處理過程不連網」的宣稱不受影響。
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -18,11 +19,139 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 type Result<T> = std::result::Result<T, String>;
 
-/// 找出擴充包裡的 Python（Windows：`pyext/python.exe`；macOS：`pyext/bin/python3`）。
+/// 擴充包最大允許解壓縮總量（600 MB，防止 ZIP 炸彈耗盡磁碟）。
+const MAX_PYEXT_TOTAL_BYTES: u64 = 600 * 1024 * 1024;
+
+/// 找出擴充包裡的 Python（Windows：`pyext/python.exe`；macOS/Linux：`pyext/bin/python3`）。
 ///
-/// 開發時在專案根目錄的 vendor/；安裝後擴充包會落在程式目錄底下。
+/// 依序檢查打包資源、使用者資料目錄（透過介面一鍵匯入）、開發時 vendor/ 與執行檔旁目錄。
 pub fn locate(resource_dir: Option<&Path>) -> Option<PathBuf> {
     crate::platform::find_bundled(resource_dir, crate::platform::bin::PYTHON, true)
+}
+
+/// 從使用者下載的 `.zip` 擴充包壓縮檔安全解壓並安裝至 `target_root/pyext`。
+///
+/// 具備 Zip-Slip 路徑穿越攔截、解壓大小上限保護，並在替換正式目錄前先執行 `version()`
+/// 驗證 `python + pdf2docx` 確實可用。
+pub fn install_archive(archive_path: &Path, target_root: &Path) -> Result<String> {
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| format!("無法開啟擴充包壓縮檔：{e}"))?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| format!("不是有效的 ZIP 擴充包格式：{e}"))?;
+
+    let staging = target_root.join("pyext.installing");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("無法建立擴充包安裝目錄：{e}"))?;
+
+    let mut total_bytes: u64 = 0;
+
+    let extract_res: Result<()> = (|| {
+        for i in 0..zip.len() {
+            if crate::is_cancelled() {
+                return Err("已取消擴充包安裝".into());
+            }
+            let mut entry = zip
+                .by_index(i)
+                .map_err(|e| format!("讀取壓縮包項目失敗：{e}"))?;
+            let raw_name = entry.name().to_string();
+            if raw_name.split(['/', '\\']).any(|seg| seg == "..") {
+                return Err("擴充包內含不安全的相對路徑（已攔截路徑穿越）".into());
+            }
+            let Some(enclosed) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+                return Err("擴充包內含不安全的相對路徑（已攔截路徑穿越）".into());
+            };
+            let rel = enclosed
+                .strip_prefix("pyext")
+                .map(|p| p.to_path_buf())
+                .unwrap_or(enclosed);
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+
+            total_bytes = total_bytes.saturating_add(entry.size());
+            if total_bytes > MAX_PYEXT_TOTAL_BYTES {
+                return Err("擴充包解壓縮後超過安全大小上限（600 MB）".into());
+            }
+
+            let out_path = staging.join(&rel);
+            if entry.is_dir() || raw_name.ends_with('/') || raw_name.ends_with('\\') {
+                std::fs::create_dir_all(&out_path)
+                    .map_err(|e| format!("無法建立目錄：{e}"))?;
+                continue;
+            }
+
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("無法建立父目錄：{e}"))?;
+            }
+
+            #[cfg(unix)]
+            if (entry.unix_mode().unwrap_or(0) & 0o170000) == 0o120000 {
+                let mut link_target = String::new();
+                entry
+                    .by_ref()
+                    .take(4096)
+                    .read_to_string(&mut link_target)
+                    .map_err(|e| format!("讀取符號連結失敗：{e}"))?;
+                let link_target = link_target.trim();
+                if link_target.is_empty()
+                    || link_target.starts_with('/')
+                    || link_target.split(['/', '\\']).any(|seg| seg == "..")
+                {
+                    return Err("擴充包內含不安全的符號連結目標".into());
+                }
+                let _ = std::fs::remove_file(&out_path);
+                std::os::unix::fs::symlink(link_target, &out_path)
+                    .map_err(|e| format!("無法建立符號連結：{e}"))?;
+                continue;
+            }
+
+            let mut out_file = std::fs::File::create(&out_path)
+                .map_err(|e| format!("無法寫入擴充包檔案：{e}"))?;
+            let copied = std::io::copy(&mut entry.by_ref().take(MAX_PYEXT_TOTAL_BYTES + 1), &mut out_file)
+                .map_err(|e| format!("解壓縮寫入失敗：{e}"))?;
+            if copied > MAX_PYEXT_TOTAL_BYTES {
+                return Err("擴充包單一檔案超過安全大小上限".into());
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = entry.unix_mode().unwrap_or(0o644) & 0o7777;
+                let is_bin = rel.starts_with("bin") || rel.extension().is_none();
+                let final_mode = if is_bin { mode | 0o755 } else { mode };
+                let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(final_mode));
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = extract_res {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+
+    let py_rel = if cfg!(windows) { "python.exe" } else { "bin/python3" };
+    let py_bin = staging.join(py_rel);
+    if !py_bin.is_file() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!("壓縮包內找不到預期執行檔（{py_rel}），請確認下載了對應作業系統的 localpdf-pyext 壓縮包"));
+    }
+
+    let ver = match version(&py_bin) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
+
+    let final_dir = target_root.join("pyext");
+    let _ = std::fs::remove_dir_all(&final_dir);
+    std::fs::rename(&staging, &final_dir)
+        .map_err(|e| format!("無法完成擴充包目錄啟用：{e}"))?;
+    Ok(ver)
 }
 
 #[allow(unused_mut)]
@@ -181,5 +310,44 @@ mod tests {
         std::fs::write(&src, b"not a pdf at all").unwrap();
         let err = pdf_to_docx(&py, &src, &dir.join("o.docx"), "Arial").unwrap_err();
         assert!(err.contains("轉檔失敗"), "訊息應該說明失敗：{err}");
+    }
+
+    #[test]
+    fn install_archive_rejects_zip_slip_and_cleans_up() {
+        use std::io::Write;
+        let dir = workdir("zipslip");
+        let zip_path = dir.join("malicious.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("../escaped.txt", opts).unwrap();
+            zw.write_all(b"pwned").unwrap();
+            zw.finish().unwrap();
+        }
+        let target = dir.join("userdata");
+        let err = install_archive(&zip_path, &target).unwrap_err();
+        assert!(err.contains("不安全的相對路徑"), "應攔截路徑穿越：{err}");
+        assert!(!dir.join("escaped.txt").exists(), "不該寫出目標目錄之外的檔案");
+        assert!(!target.join("pyext.installing").exists(), "暫存安裝目錄應被清除");
+    }
+
+    #[test]
+    fn install_archive_rejects_archive_without_python_binary() {
+        use std::io::Write;
+        let dir = workdir("incomplete");
+        let zip_path = dir.join("incomplete.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("pyext/README.txt", opts).unwrap();
+            zw.write_all(b"hello").unwrap();
+            zw.finish().unwrap();
+        }
+        let target = dir.join("userdata");
+        let err = install_archive(&zip_path, &target).unwrap_err();
+        assert!(err.contains("找不到預期執行檔"), "應回報缺執行檔：{err}");
+        assert!(!target.join("pyext.installing").exists(), "暫存安裝目錄應被清除");
     }
 }

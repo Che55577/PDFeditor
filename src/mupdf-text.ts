@@ -2,7 +2,7 @@
  * 用 MuPDF 抽出帶字級的結構化文字。
  *
  * 為什麼不走既有的 Rust 路徑：Ghostscript 的 txtwrite 中文正確，但**不輸出字級**，
- * 所以標題層級只能靠行寬猜（見 docs/pdf-to-office.md）。MuPDF 直接給字級。
+ * 所以標題層級只能靠行寬猜（見 docs/ARCHITECTURE.md）。MuPDF 直接給字級。
  */
 
 import { loadMuPdf, type MuPdf } from "./mupdf";

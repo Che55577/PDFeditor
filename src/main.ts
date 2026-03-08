@@ -104,6 +104,7 @@ const cancelBtn = $<HTMLButtonElement>("cancel");
 const saveAllBtn = $<HTMLButtonElement>("saveAll");
 const clearBtn = $<HTMLButtonElement>("clear");
 const langBtn = $<HTMLButtonElement>("langToggle");
+const installPyextBtn = $<HTMLButtonElement>("installPyext");
 
 /** 已勾選的功能。 */
 const selected = new Set<Tool>();
@@ -1050,6 +1051,7 @@ function applyLang() {
   $<HTMLElement>("dropTitle").textContent = ui.dropTitle;
   $<HTMLElement>("dropOr").textContent = ui.dropOr;
   $<HTMLButtonElement>("browse").textContent = ui.browse;
+  installPyextBtn.textContent = ui.installPyext;
   const sumTitle = document.querySelector<HTMLElement>(".summary-title");
   if (sumTitle) sumTitle.textContent = ui.summaryTitle;
   $<HTMLInputElement>("toolFilter").placeholder = ui.filterPlaceholder;
@@ -1179,7 +1181,28 @@ async function showEngines() {
   ];
   engineEl.textContent = parts.join("　·　");
   engineEl.className = e.ghostscript ? "engine ok" : "engine bad";
+  installPyextBtn.hidden = Boolean(e.pyext);
 }
+
+installPyextBtn.onclick = async () => {
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: "LocalPDF Python Extension (.zip)", extensions: ["zip"] }],
+  });
+  if (typeof picked !== "string") return;
+  const ui = UI_TEXT[getLang()];
+  installPyextBtn.disabled = true;
+  setStatus(ui.installingPyext);
+  try {
+    const ver = await invoke<string>("install_pyext", { path: picked });
+    setStatus(ui.installedPyext(ver));
+    await showEngines();
+  } catch (e) {
+    setStatus(e instanceof Error ? e.message : String(e));
+  } finally {
+    installPyextBtn.disabled = false;
+  }
+};
 
 $<HTMLInputElement>("toolFilter").oninput = (e) =>
   filterTools((e.target as HTMLInputElement).value);

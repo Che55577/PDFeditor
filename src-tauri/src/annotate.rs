@@ -1,7 +1,7 @@
 //! 在既有頁面上疊加文字：浮水印與頁碼。
 //!
 //! 兩者共用同一套機制——**只在原內容之上追加一段內容串流，原內容一個位元組都不動**。
-//! 這也是 iLovePDF 的「Edit PDF」實際在做的事（見 `docs/edit-pdf-analysis.md`）。
+//! 這也是 iLovePDF 的「Edit PDF」實際在做的事（見 `docs/ARCHITECTURE.md`）。
 
 use std::path::{Path, PathBuf};
 

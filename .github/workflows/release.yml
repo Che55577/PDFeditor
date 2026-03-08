@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   publish-tauri:
@@ -36,7 +38,8 @@ jobs:
             librsvg2-dev \
             patchelf \
             ghostscript \
-            qpdf
+            qpdf \
+            zip
 
       - uses: actions/setup-node@v4
         with:
@@ -73,8 +76,14 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "LocalPDF v__VERSION__"
-          releaseBody: "請依作業系統下載對應安裝檔。若需使用「PDF 轉 Word」功能，請額外下載對應平台的 `localpdf-pyext-*` 擴充包並解壓縮至安裝目錄下的 `pyext/` 資料夾。"
-          releaseDraft: true
+          releaseBody: |
+            ### 📥 下載指南 (Download Guide)
+            - **Windows (x64)**：下載 `LocalPDF_*_x64-setup.exe`
+            - **macOS (Apple Silicon)**：下載 `LocalPDF_*_aarch64.dmg`
+            - **Linux (x64)**：下載 `LocalPDF_*_amd64.deb` 或 `.AppImage`
+            - **選用擴充包（PDF 轉 Word）**：下載對應平台的 `localpdf-pyext-*.zip`，開啟 LocalPDF 後點擊視窗下方 **「匯入擴充包 (.zip)」** 即可一鍵免權限啟用。
+            - **供應鏈校驗**：所有安裝檔與擴充包之雜湊值均記錄於 `SHA256SUMS.txt`，並附帶 GitHub Sigstore 建置來源證明（可透過 `gh attestation verify <file> --repo Che55577/PDFeditor` 驗證）。
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -85,16 +94,55 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path vendor/pyext -DestinationPath "localpdf-pyext-windows-${{ runner.arch }}.zip" -Force
+          Compress-Archive -Path vendor/pyext -DestinationPath "localpdf-pyext-Windows-${{ runner.arch }}.zip" -Force
 
       - name: 封裝擴充包壓縮檔（macOS / Linux）
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          tar -C vendor -czf "localpdf-pyext-${{ runner.os }}-${{ runner.arch }}.tar.gz" pyext
+          cd vendor
+          zip -ry "../localpdf-pyext-${{ runner.os }}-${{ runner.arch }}.zip" pyext
+
+      - name: 附加擴充包至 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: localpdf-pyext-*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 上傳擴充包 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: localpdf-pyext-${{ runner.os }}-${{ runner.arch }}
-          path: localpdf-pyext-*
+          path: localpdf-pyext-*.zip
+
+  finalize-release:
+    needs: publish-tauri
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: 下載所有 Release 產物並產生 SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist-assets
+          gh release download "${GITHUB_REF_NAME}" -D dist-assets --repo "${GITHUB_REPOSITORY}"
+          cd dist-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 產生 GitHub Sigstore 建置來源證明 (Build Provenance Attestation)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist-assets/*"
+
+      - name: 上傳 SHA256SUMS.txt 至 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" dist-assets/SHA256SUMS.txt --clobber --repo "${GITHUB_REPOSITORY}"

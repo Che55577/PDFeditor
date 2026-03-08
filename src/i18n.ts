@@ -64,6 +64,9 @@ export const UI_TEXT = {
     planOpenEditor: (name: string) => `對 ${name} 開啟編輯器`,
     planReady: (count: number, chain: string) => `${count} 個檔案　·　${chain}`,
     acceptHint: (accept: string) => `　（目前接受 ${accept}）`,
+    installPyext: "匯入擴充包 (.zip)",
+    installingPyext: "正在驗證並安裝擴充包…",
+    installedPyext: (ver: string) => `擴充包安裝完成（${ver}），「PDF 轉 Word」已啟用。`,
   },
   en: {
     sub: "Files never leave this device. Temporary outputs are wiped immediately after saving or closing.",
@@ -86,5 +89,8 @@ export const UI_TEXT = {
     planOpenEditor: (name: string) => `Open editor for ${name}`,
     planReady: (count: number, chain: string) => `${count} file(s) · ${chain}`,
     acceptHint: (accept: string) => ` (Accepts ${accept})`,
+    installPyext: "Import Extension (.zip)",
+    installingPyext: "Verifying and installing extension pack…",
+    installedPyext: (ver: string) => `Extension installed (${ver}). PDF to Word is now ready.`,
   },
 };

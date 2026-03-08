@@ -65,6 +65,9 @@ jobs:
           pip install reportlab pillow
           python bench/make_corpus.py
 
+      - name: 前端介面與互動整合測試
+        run: npm run test:ui
+
       - name: 前端型別檢查與打包
         run: npm run build
 

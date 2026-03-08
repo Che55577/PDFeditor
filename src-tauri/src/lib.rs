@@ -281,12 +281,23 @@ struct Engines {
 
 #[tauri::command]
 fn engine_status(state: State<'_, AppState>) -> Engines {
+    let office = state.office.clone().or_else(office::locate);
+    let pyext = state.pyext.clone().or_else(|| pyext::locate(None));
     Engines {
         ghostscript: state.gs.as_ref().and_then(|p| gs::version(p).ok()),
-        libreoffice: state.office.as_ref().and_then(|p| office::version(p).ok()),
-        pyext: state.pyext.as_ref().and_then(|p| pyext::version(p).ok()),
+        libreoffice: office.as_ref().and_then(|p| office::version(p).ok()),
+        pyext: pyext.as_ref().and_then(|p| pyext::version(p).ok()),
         qpdf: state.qpdf.as_ref().and_then(|p| crypt::version(p).ok()),
     }
+}
+
+/// 從本機下載的 `.zip` 壓縮包匯入並安裝 Python 擴充包（免管理員權限、免重啟）。
+#[tauri::command]
+async fn install_pyext(path: String) -> Result<String, String> {
+    let target = platform::user_data_dir().ok_or("找不到本機使用者資料目錄")?;
+    tauri::async_runtime::spawn_blocking(move || pyext::install_archive(Path::new(&path), &target))
+        .await
+        .map_err(|e| format!("擴充包安裝執行緒異常：{e}"))?
 }
 
 #[derive(serde::Serialize)]
@@ -366,7 +377,7 @@ async fn thumbnail(state: State<'_, AppState>, path: String) -> Result<tauri::ip
 ///
 /// **只有「轉成 Markdown」會用到。** 其他工具的檔案內容都只存在於 Rust 這側，
 /// 前端拿得到的僅有路徑。這裡開這個口是因為 MuPDF 只有 WASM 版可用，
-/// 而它需要拿到位元組——理由見 `docs/edit-pdf-analysis.md` 第 8.4 節。
+/// 而它需要拿到位元組——理由見 `docs/ARCHITECTURE.md`。
 ///
 /// 回傳 `Response` 而不是 `Vec<u8>`：後者會被序列化成 JSON 數字陣列，
 /// 一份 30 MB 的 PDF 會膨脹成上百 MB 的字串。
@@ -468,27 +479,28 @@ async fn run_pipeline(
     let mut ops = ops;
     ops.sort_by_key(Operation::order);
 
-    if ops.iter().any(Operation::needs_gs) && state.gs.is_none() {
+    let root = state.eph_root.clone();
+    let gs = state.gs.clone();
+    let office = state.office.clone().or_else(office::locate);
+    let pyext = state.pyext.clone().or_else(|| pyext::locate(None));
+    let qpdf = state.qpdf.clone();
+
+    if ops.iter().any(Operation::needs_gs) && gs.is_none() {
         return Err("找不到 Ghostscript 引擎，此功能無法使用".into());
     }
-    if ops.iter().any(Operation::needs_office) && state.office.is_none() {
-        return Err("找不到 LibreOffice。Office 轉檔需要先安裝它，安裝後請重新啟動本程式".into());
+    if ops.iter().any(Operation::needs_office) && office.is_none() {
+        return Err("找不到 LibreOffice。Office 轉檔需要先安裝它".into());
     }
-
-    if ops.iter().any(Operation::needs_qpdf) && state.qpdf.is_none() {
+    if ops.iter().any(Operation::needs_qpdf) && qpdf.is_none() {
         return Err("找不到加密引擎（qpdf），安裝檔可能不完整".into());
     }
-    if ops.iter().any(Operation::needs_pyext) && state.pyext.is_none() {
+    if ops.iter().any(Operation::needs_pyext) && pyext.is_none() {
         return Err(
-            "PDF 轉 Word 需要另外安裝擴充包（約 100 MB）。安裝後請重新啟動本程式".into(),
+            "PDF 轉 Word 需要另外安裝擴充包（約 100 MB），可點擊畫面下方「匯入擴充包」直接安裝"
+                .into(),
         );
     }
 
-    let root = state.eph_root.clone();
-    let gs = state.gs.clone();
-    let office = state.office.clone();
-    let pyext = state.pyext.clone();
-    let qpdf = state.qpdf.clone();
     let source_name = file_name(&PathBuf::from(&paths[0]), &paths[0]);
     let orig_bytes: u64 = paths
         .iter()
@@ -1207,6 +1219,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             engine_status,
+            install_pyext,
             list_fonts,
             inspect,
             thumbnail,

@@ -351,8 +351,18 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
   color: var(--dim);
 }
 
-.foot { margin: 28px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.foot {
+  margin: 28px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .foot .engine { margin: 0; font-size: 0.74rem; }
+.foot button.tiny { padding: 3px 10px; font-size: 0.74rem; }
 
 /* 檔案卡片的頁面預覽 */
 .thumb {

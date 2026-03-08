@@ -26,13 +26,38 @@ pub mod bin {
     pub const PYTHON: &str = "pyext/bin/python3";
 }
 
-/// 依序在「打包資源 → 開發時的 vendor/ → 執行檔所在位置往上」找 `rel`。
+/// 使用者本機資料目錄（免管理員權限，供擴充包一鍵匯入安裝使用）。
+pub fn user_data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("com.localpdf.app"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|p| PathBuf::from(p).join("Library/Application Support/com.localpdf.app"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
+            .map(|p| p.join("com.localpdf.app"))
+    }
+}
+
+/// 依序在「打包資源 → 使用者擴充包目錄 → 開發時的 vendor/ → 執行檔所在位置往上」找 `rel`。
 ///
-/// `also_beside_exe` 給擴充包用：它安裝後會落在程式目錄底下，而不是資源目錄。
+/// `also_beside_exe` 給擴充包用：它安裝後會落在使用者資料目錄或程式目錄底下。
 pub fn find_bundled(resource_dir: Option<&Path>, rel: &str, also_beside_exe: bool) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(res) = resource_dir {
         candidates.push(res.join(rel));
+    }
+    if also_beside_exe {
+        if let Some(ud) = user_data_dir() {
+            candidates.push(ud.join(rel));
+        }
     }
     if let Ok(exe) = std::env::current_exe() {
         for up in exe.ancestors().take(6) {

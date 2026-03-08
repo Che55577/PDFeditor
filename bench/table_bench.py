@@ -4,7 +4,7 @@
 表格框線一旦被誤判成圖形，整張表就會變成一張圖、文字全部拿不回來。所以這裡刻意
 走產品同一支腳本，並印出點陣化了幾塊——**表格語料這一欄必須是 0**。
 
-需要裝了 pdf2docx 的環境（見 docs/pdf-to-office.md）。
+需要裝了 pdf2docx 的環境（見 docs/ARCHITECTURE.md）。
 用法: <pyext>/python.exe bench/table_bench.py
 """
 import json
