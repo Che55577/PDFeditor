@@ -104,19 +104,21 @@ pub fn watermark(
     let width = prepared.width_em * style.size;
 
     for page_id in resolve(&doc, targets)? {
-        let [x0, y0, x1, y1] = page_box(&doc, page_id)?;
-        let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let visual = visual_page_info(&doc, page_id)?;
+        let (cx, cy) = (visual.width / 2.0, visual.height / 2.0);
 
-        // 讓文字的中心落在頁面中心：先沿文字方向退半個寬度，
+        // 讓文字的中心落在頁面視覺中心：先沿文字方向退半個寬度，
         // 再往垂直方向退約略半個字高（0.35 em 接近多數字型的視覺中線）。
         let half = width / 2.0;
         let rise = style.size * 0.35;
         let tx = cx - half * cos + rise * sin;
         let ty = cy - half * sin - rise * cos;
+        let [ma, mb, mc, md, me, mf] = visual.matrix;
 
         let body = format!(
-            "BT /Fwm {size} Tf {r:.4} {g:.4} {b:.4} rg \
-             {cos:.6} {sin:.6} {nsin:.6} {cos:.6} {tx:.3} {ty:.3} Tm <{hex}> Tj ET",
+            "q {ma:.6} {mb:.6} {mc:.6} {md:.6} {me:.3} {mf:.3} cm \
+             BT /Fwm {size} Tf {r:.4} {g:.4} {b:.4} rg \
+             {cos:.6} {sin:.6} {nsin:.6} {cos:.6} {tx:.3} {ty:.3} Tm <{hex}> Tj ET Q",
             size = style.size,
             r = style.color[0],
             g = style.color[1],
@@ -166,12 +168,14 @@ pub fn page_numbers(
     let font_id = font.embed(&mut doc)?;
 
     for (page_id, prepared) in labels {
-        let page = page_box(&doc, page_id)?;
+        let visual = visual_page_info(&doc, page_id)?;
         let width = prepared.width_em * style.size;
-        let (x, y) = corner.place(page, width, style.size, margin);
+        let (x, y) = corner.place([0.0, 0.0, visual.width, visual.height], width, style.size, margin);
+        let [ma, mb, mc, md, me, mf] = visual.matrix;
 
         let body = format!(
-            "BT /Fwm {size} Tf {r:.4} {g:.4} {b:.4} rg 1 0 0 1 {x:.3} {y:.3} Tm <{hex}> Tj ET",
+            "q {ma:.6} {mb:.6} {mc:.6} {md:.6} {me:.3} {mf:.3} cm \
+             BT /Fwm {size} Tf {r:.4} {g:.4} {b:.4} rg 1 0 0 1 {x:.3} {y:.3} Tm <{hex}> Tj ET Q",
             size = style.size,
             r = style.color[0],
             g = style.color[1],
@@ -209,12 +213,14 @@ pub fn stamp_image(
     let height = place.width * img.height as f64 / img.width.max(1) as f64;
 
     for page_id in resolve(&doc, targets)? {
-        let page = page_box(&doc, page_id)?;
-        let (x, y) = place.corner.place(page, place.width, height, place.margin);
+        let visual = visual_page_info(&doc, page_id)?;
+        let (x, y) = place.corner.place([0.0, 0.0, visual.width, visual.height], place.width, height, place.margin);
+        let [a, b, c, d, e, f] = visual.matrix;
 
         // cm 把 1×1 單位方塊縮放成圖章尺寸並平移到定位點。
         let body = format!(
-            "{w:.3} 0 0 {h:.3} {x:.3} {y:.3} cm /Imstamp Do",
+            "q {a:.6} {b:.6} {c:.6} {d:.6} {e:.3} {f:.3} cm \
+             {w:.3} 0 0 {h:.3} {x:.3} {y:.3} cm /Imstamp Do Q",
             w = place.width,
             h = height,
         );
@@ -261,6 +267,44 @@ fn page_box(doc: &Document, page_id: ObjectId) -> Result<[f64; 4]> {
     pages::inherited_rect(doc, page_id, b"CropBox")
         .or_else(|| pages::inherited_rect(doc, page_id, b"MediaBox"))
         .ok_or_else(|| "頁面沒有可用的尺寸資訊".to_string())
+}
+
+struct PageVisual {
+    /// 視覺直立寬度
+    width: f64,
+    /// 視覺直立高度
+    height: f64,
+    /// 從使用者視覺直立座標 (u, v) 映射到 PDF 實體頁面座標 (x, y) 的變換矩陣
+    matrix: [f64; 6],
+}
+
+fn visual_page_info(doc: &Document, page_id: ObjectId) -> Result<PageVisual> {
+    let [x0, y0, x1, y1] = page_box(doc, page_id)?;
+    let w = (x1 - x0).abs();
+    let h = (y1 - y0).abs();
+    let rot = pages::inherited_rotation(doc, page_id);
+    match rot {
+        90 => Ok(PageVisual {
+            width: h,
+            height: w,
+            matrix: [0.0, -1.0, 1.0, 0.0, x0, y1],
+        }),
+        180 => Ok(PageVisual {
+            width: w,
+            height: h,
+            matrix: [-1.0, 0.0, 0.0, -1.0, x1, y1],
+        }),
+        270 => Ok(PageVisual {
+            width: h,
+            height: w,
+            matrix: [0.0, 1.0, -1.0, 0.0, x1, y0],
+        }),
+        _ => Ok(PageVisual {
+            width: w,
+            height: h,
+            matrix: [1.0, 0.0, 0.0, 1.0, x0, y0],
+        }),
+    }
 }
 
 /// 把一段繪圖指令疊到頁面最上層。

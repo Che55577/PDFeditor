@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).parent))
 from compress_bench import BASE, GS, WORK, dpi_profile  # noqa: E402
+from make_corpus import CJK_TTF  # noqa: E402
 
 ROOT = Path(__file__).parent
 SRC = ROOT / "corpus" / "c2_scan.pdf"
@@ -47,7 +48,10 @@ def main():
     if not SRC.exists():
         sys.exit("找不到語料，請先跑 python bench/make_corpus.py")
     WORK.mkdir(exist_ok=True)
-    font = ImageFont.truetype(r"C:\Windows\Fonts\msjh.ttc", 22)
+    try:
+        font = ImageFont.truetype(CJK_TTF, 22) if CJK_TTF else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
 
     panels = []
     for label, args in CANDIDATES.items():

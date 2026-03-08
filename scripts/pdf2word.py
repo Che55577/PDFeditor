@@ -23,6 +23,8 @@ pdf2docx 的資料模型只有三種東西：文字、點陣圖、以及能變�
 """
 import json
 import logging
+import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -151,6 +153,19 @@ def rasterize_vector_art(doc, dpi=RASTER_DPI) -> int:
     return done
 
 
+def _wipe_path(path: Path):
+    try:
+        if path.exists():
+            size = path.stat().st_size
+            with open(path, "wb") as f:
+                f.write(b"\x00" * size)
+                f.flush()
+                os.fsync(f.fileno())
+            path.unlink()
+    except Exception:
+        pass
+
+
 def convert(src: Path, dst: Path, settings: dict) -> int:
     """轉檔，回傳點陣化了幾塊向量圖形（給 bench 用來分辨「沒點陣化」和「點陣化了但仍遺失」）。"""
     import pymupdf
@@ -160,8 +175,7 @@ def convert(src: Path, dst: Path, settings: dict) -> int:
     pages = settings.pop("pages", None)
 
     work = src
-    # 中間檔開在輸出檔旁邊。正常會自己刪掉，但硬砍行程時不會——
-    # **所以呼叫端的輸出路徑必須在暫存區內**，才有啟動掃除當保險。見 src-tauri/src/ephemeral.rs。
+    # 中間檔無副檔名，防止系統縮圖索引；用完透過 zero-fill 抹除。
     tmp = None
     rasterized = 0
     if keep_vector:
@@ -169,7 +183,7 @@ def convert(src: Path, dst: Path, settings: dict) -> int:
         try:
             rasterized = rasterize_vector_art(doc)
             if rasterized:
-                tmp = dst.with_suffix(".prep.pdf")
+                tmp = dst.parent / f".tmp_{secrets.token_hex(16)}"
                 doc.save(tmp)
                 work = tmp
         finally:
@@ -180,8 +194,8 @@ def convert(src: Path, dst: Path, settings: dict) -> int:
         cv.convert(str(dst), pages=pages, **settings)
     finally:
         cv.close()
-        if tmp and tmp.exists():
-            tmp.unlink()
+        if tmp:
+            _wipe_path(tmp)
     return rasterized
 
 

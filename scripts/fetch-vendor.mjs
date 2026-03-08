@@ -22,11 +22,14 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -34,11 +37,19 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VENDOR = join(ROOT, "vendor");
 const CACHE = join(VENDOR, "_cache");
 
-// 改版本請同步更新 vendor/README.md；Ghostscript 改版還要重跑 bench/compress_bench.py。
+// 改版本請同步更新 vendor/README.md 與下方 SHA256；Ghostscript 改版還要重跑 bench/compress_bench.py。
 const QPDF_VERSION = "12.4.2";
 const GS_VERSION = "10.07.1";
 const GS_TAG = "gs10071";
 const SEVENZIP_MSI = "https://github.com/ip7z/7zip/releases/download/26.02/7z2602-x64.msi";
+
+const SHA256 = {
+  "qpdf-12.4.2-msvc64.zip": "db87077e683630c1217e0e8f9a20a9749d952ab676e881c3689187763a5de25d",
+  "qpdf-12.4.2-bin-macos-arm64.zip": "62e46987a30ea167cbc530ccb22690aec3d8c812ed09979a941bcee92e504b79",
+  "qpdf-12.4.2-bin-macos-x86_64.zip": "dd3b01f4414d198529bb0f13bba59c2f016a328bb3506695087a96fb80fc1481",
+  "gs10071w64.exe": "3a4c28d0aac47aa7cccd35a5932c55110376e9dbd966898dde388b7faba444a4",
+  "7z2602-x64.msi": "db407a4f6d4999e5c7bc00ce8a882be94717b56e7fa68140fe3f12605d91643e",
+};
 
 const PLATFORM = process.platform;
 const ARCH = process.env.LOCALPDF_ARCH ?? process.arch;
@@ -47,17 +58,35 @@ function log(msg) {
   console.log(`[fetch-vendor] ${msg}`);
 }
 
-async function download(url, dest) {
+async function download(url, dest, expectedSha256 = null) {
   mkdirSync(dirname(dest), { recursive: true });
   if (existsSync(dest)) {
-    log(`已快取 ${dest.replace(ROOT, ".")}`);
-    return dest;
+    if (expectedSha256) {
+      const hash = createHash("sha256").update(readFileSync(dest)).digest("hex");
+      if (hash.toLowerCase() === expectedSha256.toLowerCase()) {
+        log(`已快取（SHA-256 驗證通過）${dest.replace(ROOT, ".")}`);
+        return dest;
+      }
+      log(`快取 SHA-256 不符，重新下載：${dest}`);
+      unlinkSync(dest);
+    } else {
+      log(`已快取 ${dest.replace(ROOT, ".")}`);
+      return dest;
+    }
   }
   log(`下載 ${url}`);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`下載失敗 ${res.status}：${url}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (expectedSha256) {
+    const actual = createHash("sha256").update(buf).digest("hex");
+    if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
+      throw new Error(`SHA-256 校驗失敗！預期 ${expectedSha256}，實際 ${actual}`);
+    }
+    log(`SHA-256 驗證通過 (${actual.slice(0, 10)}...)`);
+  }
   const part = `${dest}.part`;
-  writeFileSync(part, Buffer.from(await res.arrayBuffer()));
+  writeFileSync(part, buf);
   renameSync(part, dest);
   return dest;
 }
@@ -125,7 +154,8 @@ async function qpdf() {
   const base = `https://github.com/qpdf/qpdf/releases/download/v${QPDF_VERSION}`;
 
   if (PLATFORM === "win32") {
-    const zip = await download(`${base}/qpdf-${QPDF_VERSION}-msvc64.zip`, join(CACHE, `qpdf-${QPDF_VERSION}-msvc64.zip`));
+    const zipName = `qpdf-${QPDF_VERSION}-msvc64.zip`;
+    const zip = await download(`${base}/${zipName}`, join(CACHE, zipName), SHA256[zipName]);
     const raw = join(CACHE, "qpdf-win");
     extract(zip, raw);
     const bin = dirname(findFile(raw, "qpdf.exe"));
@@ -135,10 +165,15 @@ async function qpdf() {
       if (!/\.(exe|dll)$/i.test(name) || /zlib-flate|fix-qdf|qpdf-tools/i.test(name)) continue;
       copyFileSync(join(bin, name), join(dest, name));
     }
+    // 合規保留：拷貝授權與著作權聲明（Apache-2.0 §4a）
+    for (const lic of ["LICENSE.txt", "NOTICE.md", "README-doc.md"]) {
+      const p = findFile(raw, lic);
+      if (p) copyFileSync(p, join(dest, lic));
+    }
   } else if (PLATFORM === "darwin") {
     const arch = ARCH === "arm64" ? "arm64" : "x86_64";
     const name = `qpdf-${QPDF_VERSION}-bin-macos-${arch}.zip`;
-    const zip = await download(`${base}/${name}`, join(CACHE, name));
+    const zip = await download(`${base}/${name}`, join(CACHE, name), SHA256[name]);
     const raw = join(CACHE, `qpdf-mac-${arch}`);
     extract(zip, raw);
     // 保留官方的 bin/ + lib/ 結構：qpdf 以 @executable_path/../lib 找函式庫。
@@ -148,7 +183,21 @@ async function qpdf() {
     mkdirSync(join(dest, "lib"));
     copyFileSync(join(raw, "bin", "qpdf"), exe);
     chmodSync(exe, 0o755);
-    copyFileSync(join(raw, "lib", "libqpdf.30.dylib"), join(dest, "lib", "libqpdf.30.dylib"));
+    const dylibDest = join(dest, "lib", "libqpdf.30.dylib");
+    copyFileSync(join(raw, "lib", "libqpdf.30.dylib"), dylibDest);
+    // 合規保留：拷貝授權聲明（Apache-2.0 §4a）
+    const notices = join(ROOT, "THIRD_PARTY_NOTICES.md");
+    if (existsSync(notices)) copyFileSync(notices, join(dest, "LICENSE-NOTICE.md"));
+  } else if (PLATFORM === "linux") {
+    mkdirSync(join(dest, "bin"), { recursive: true });
+    writeFileSync(join(dest, "README.txt"), "On Linux, LocalPDF uses system qpdf (e.g. apt install qpdf).\n");
+    const sysQpdf = capture("which", ["qpdf"]);
+    if (sysQpdf && existsSync(sysQpdf)) {
+      log(`qpdf（Linux 系統套件）已就緒：${capture(sysQpdf, ["--version"]).split(/\r?\n/)[0]}`);
+    } else {
+      log("Linux 環境未預裝 qpdf，已建立資源目錄佔位檔（執行期將從系統 PATH 尋找 qpdf）");
+    }
+    return;
   } else {
     throw new Error(`qpdf：不支援的平台 ${PLATFORM}`);
   }
@@ -182,15 +231,17 @@ async function ghostscript() {
   }
 
   if (PLATFORM === "win32") {
+    const gsExeName = `${GS_TAG}w64.exe`;
     const installer = await download(
-      `https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/${GS_TAG}/${GS_TAG}w64.exe`,
-      join(CACHE, `${GS_TAG}w64.exe`),
+      `https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/${GS_TAG}/${gsExeName}`,
+      join(CACHE, gsExeName),
+      SHA256[gsExeName],
     );
     // 官方只提供 NSIS 安裝器，但它其實是壓縮包，用 7-Zip 解開即可，不必真的安裝。
     // msiexec 的 administrative install（/a）只是解開 MSI，不需要管理員權限。
     const sevenZip = join(CACHE, "7zx", "Files", "7-Zip", "7z.exe");
     if (!existsSync(sevenZip)) {
-      const msi = await download(SEVENZIP_MSI, join(CACHE, "7z.msi"));
+      const msi = await download(SEVENZIP_MSI, join(CACHE, "7z.msi"), SHA256["7z2602-x64.msi"]);
       run("msiexec", ["/a", msi, "/qn", `TARGETDIR=${join(CACHE, "7zx")}`]);
     }
     const raw = join(CACHE, "gs_raw");
@@ -203,10 +254,25 @@ async function ghostscript() {
     for (const name of ["gswin64c.exe", "gsdll64.dll"]) {
       copyFileSync(join(raw, "bin", name), join(dest, "bin", name));
     }
+    // 合規保留：拷貝授權聲明（AGPL-3.0）
+    for (const lic of ["COPYING", "LICENSE"]) {
+      const p = findFile(raw, lic);
+      if (p) copyFileSync(p, join(dest, lic));
+    }
   } else if (PLATFORM === "darwin") {
     run("bash", [join(ROOT, "scripts", "build-gs-macos.sh")], {
       env: { ...process.env, GS_VERSION, GS_TAG, ARCH: ARCH === "x64" ? "x86_64" : ARCH },
     });
+  } else if (PLATFORM === "linux") {
+    mkdirSync(join(dest, "bin"), { recursive: true });
+    writeFileSync(join(dest, "README.txt"), "On Linux, LocalPDF uses system ghostscript (e.g. apt install ghostscript).\n");
+    const sysGs = capture("which", ["gs"]);
+    if (sysGs && existsSync(sysGs)) {
+      log(`Ghostscript（Linux 系統套件）已就緒：${capture(sysGs, ["--version"])}`);
+    } else {
+      log("Linux 環境未預裝 gs，已建立資源目錄佔位檔（執行期將從系統 PATH 尋找 gs）");
+    }
+    return;
   } else {
     throw new Error(`Ghostscript：不支援的平台 ${PLATFORM}`);
   }

@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: ""
+          - platform: ubuntu-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安裝 Linux 系統相依套件
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            ghostscript \
+            qpdf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/ghostscript
+            vendor/qpdf
+          key: vendor-${{ runner.os }}-${{ runner.arch }}-gs10.07.1-qpdf12.4.2-v2
+
+      - name: 安裝前端相依與同步 MuPDF
+        run: npm ci
+
+      - name: 取得 Ghostscript 與 qpdf
+        run: npm run fetch:vendor
+
+      - name: 打包 Tauri 安裝檔並發佈至 GitHub Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "LocalPDF v__VERSION__"
+          releaseBody: "請依作業系統下載對應安裝檔。若需使用「PDF 轉 Word」功能，請額外下載對應平台的 `localpdf-pyext-*` 擴充包並解壓縮至安裝目錄下的 `pyext/` 資料夾。"
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: 建置 Python 擴充包（pyext）
+        run: python scripts/build-pyext.py
+
+      - name: 封裝擴充包壓縮檔（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path vendor/pyext -DestinationPath "localpdf-pyext-windows-${{ runner.arch }}.zip" -Force
+
+      - name: 封裝擴充包壓縮檔（macOS / Linux）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          tar -C vendor -czf "localpdf-pyext-${{ runner.os }}-${{ runner.arch }}.tar.gz" pyext
+
+      - name: 上傳擴充包 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: localpdf-pyext-${{ runner.os }}-${{ runner.arch }}
+          path: localpdf-pyext-*

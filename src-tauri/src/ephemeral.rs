@@ -28,15 +28,30 @@ pub fn sweep(root: &Path) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            let _ = fs::remove_dir_all(&path);
+            wipe_dir_all(&path);
         } else {
             wipe(&path);
         }
     }
 }
 
+/// 遞迴將資料夾內所有檔案覆寫一輪後再移除整個目錄樹。
+pub fn wipe_dir_all(dir: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                wipe_dir_all(&path);
+            } else {
+                wipe(&path);
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
 /// 覆寫一輪後刪除。失敗時仍會嘗試直接刪除。
-fn wipe(path: &Path) {
+pub fn wipe(path: &Path) {
     if let Ok(meta) = fs::metadata(path) {
         let len = meta.len();
         if let Ok(mut f) = OpenOptions::new().write(true).open(path) {

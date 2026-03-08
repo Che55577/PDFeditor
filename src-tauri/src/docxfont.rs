@@ -145,6 +145,13 @@ fn resolve<'a>(name: &str, installed: &'a [Family]) -> Option<&'a Family> {
     best.map(|(_, f)| f)
 }
 
+fn escape_xml_attr(val: &str) -> String {
+    val.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// 把 docx 裡對不上的字型名稱換掉。回傳被替換的「原名 → 新名」對照，方便回報。
 ///
 /// `fallback` 是完全找不到對應時要用的字型。
@@ -156,13 +163,29 @@ pub fn remap(docx: &Path, fallback: &str) -> Result<BTreeMap<String, String>> {
     let file = std::fs::File::open(docx).map_err(|e| format!("無法開啟輸出檔：{e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("輸出檔不是有效的 docx：{e}"))?;
 
-    // 先讀出所有內容，才能原地覆寫
+    // 先讀出所有內容，才能原地覆寫；限制單一項目與壓縮包總解壓縮大小以防止 ZIP 炸彈與靜默截斷
+    const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+    let mut total_bytes: u64 = 0;
     let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let mut item = archive.by_index(i).map_err(|e| format!("讀取 docx 失敗：{e}"))?;
+        if item.size() > MAX_ENTRY_BYTES {
+            return Err("docx 內嵌檔案超過 64 MB 安全限制".into());
+        }
         let name = item.name().to_string();
         let mut buf = Vec::new();
-        item.read_to_end(&mut buf).map_err(|e| format!("讀取 docx 失敗：{e}"))?;
+        item.by_ref()
+            .take(MAX_ENTRY_BYTES + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("讀取 docx 失敗：{e}"))?;
+        if buf.len() as u64 > MAX_ENTRY_BYTES {
+            return Err("docx 內嵌檔案實際大小超過 64 MB 安全限制".into());
+        }
+        total_bytes = total_bytes.saturating_add(buf.len() as u64);
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err("docx 解壓縮總大小超過 256 MB 安全限制".into());
+        }
         entries.push((name, buf));
     }
     drop(archive);
@@ -202,9 +225,10 @@ pub fn remap(docx: &Path, fallback: &str) -> Result<BTreeMap<String, String>> {
                 if replacement == original {
                     continue;
                 }
+                let safe_replacement = escape_xml_attr(&replacement);
                 text = text.replace(
                     &format!("{attr}=\"{original}\""),
-                    &format!("{attr}=\"{replacement}\""),
+                    &format!("{attr}=\"{safe_replacement}\""),
                 );
                 changes.insert(format!("{original} ({attr})"), replacement);
             }
@@ -239,9 +263,16 @@ mod tests {
             eprintln!("跳過：讀不到系統字型");
             return;
         }
+        let common = [
+            "Arial",
+            "DejaVu Sans",
+            "Liberation Sans",
+            "Noto Sans CJK TC",
+            "AR PL UKai TW",
+        ];
         assert!(
-            resolve("Arial", &installed).is_some(),
-            "應該找得到 Arial"
+            common.iter().any(|name| resolve(name, &installed).is_some()),
+            "應該找得到常見系統字型（Arial / DejaVu Sans / Noto Sans CJK TC）"
         );
     }
 
@@ -277,8 +308,19 @@ mod tests {
         if installed.is_empty() {
             return;
         }
-        let found = resolve("ABCDEF+Arial", &installed).expect("去掉子集前綴後應該對得上");
-        assert_eq!(found.latin, "Arial");
+        let target = [
+            "Arial",
+            "DejaVu Sans",
+            "Liberation Sans",
+            "Noto Sans CJK TC",
+            "AR PL UKai TW",
+        ]
+        .into_iter()
+        .find(|name| resolve(name, &installed).is_some())
+        .expect("應至少有一套常見系統字型");
+        let found = resolve(&format!("ABCDEF+{target}"), &installed)
+            .expect("去掉子集前綴後應該對得上");
+        assert_eq!(found.latin, target);
     }
 
     #[test]

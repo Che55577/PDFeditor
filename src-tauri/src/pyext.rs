@@ -25,6 +25,7 @@ pub fn locate(resource_dir: Option<&Path>) -> Option<PathBuf> {
     crate::platform::find_bundled(resource_dir, crate::platform::bin::PYTHON, true)
 }
 
+#[allow(unused_mut)]
 fn build_cmd(py: &Path) -> Command {
     let mut cmd = Command::new(py);
     #[cfg(windows)]
@@ -62,13 +63,12 @@ const CONVERT: &str = include_str!("../../scripts/pdf2word.py");
 /// `output` **必須是 `Ephemeral` 的路徑**：腳本做向量前處理時會在它旁邊開一個
 /// `.prep.pdf` 中間檔，硬砍行程時要靠啟動掃除清掉。
 pub fn pdf_to_docx(py: &Path, input: &Path, output: &Path, fallback_font: &str) -> Result<()> {
-    let result = build_cmd(py)
-        .arg("-c")
+    let mut cmd = build_cmd(py);
+    cmd.arg("-c")
         .arg(CONVERT)
         .arg(input)
-        .arg(output)
-        .output()
-        .map_err(|e| format!("無法執行轉檔：{e}"))?;
+        .arg(output);
+    let result = crate::platform::run_with_timeout(cmd, 180)?;
 
     if !result.status.success() {
         let err = String::from_utf8_lossy(&result.stderr);
@@ -144,7 +144,7 @@ mod tests {
         );
     }
 
-    /// 條碼與 QR 碼在 pdf2docx 的資料模型裡無處可去，會整個消失。
+    /// 條碼與 QR 碼在 pdf2docx 的資料模型裡無處可去，若不處理會消失。
     /// 唯一救得回來的辦法是先點陣化，所以這裡守的是那條前處理路徑。
     #[test]
     fn barcodes_survive_as_images() {

@@ -32,8 +32,7 @@ SCRIPT = ROOT / "scripts" / "pdf2word.py"
 PAGES = 1
 
 # 關掉表格解析：在這份語料上單獨就有 +0.05 SSIM，因為細線表格本來會被誤判。
-# 鍵名要用真的存在的——`Converter.default_settings` 才是準的，
-# 傳不存在的鍵會被安靜忽略（我第一次就傳了不存在的 curve_path_ratio，白測一輪）。
+# 鍵名請以 `Converter.default_settings` 定義為準，未知鍵名會被忽略。
 NO_TABLE = {"parse_lattice_table": False, "parse_stream_table": False}
 
 PROFILES: dict[str, dict] = {

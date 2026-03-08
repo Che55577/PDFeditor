@@ -10,34 +10,125 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase import pdfmetrics, ttfonts
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
+import re
+
+
+def _compliant_tounicode_cmap(fontname, subset):
+    """修正 ReportLab 內建 makeToUnicodeCMap 的兩個規格瑕疵：
+    1. Linux 字型（如 AR PL UKai CN）名稱含空白時，`/CMapName /xxx` 會造成 CMap 語法錯誤。
+    2. PDF 32000-1 §9.10.3 規定每個 beginbfchar 區塊最多 100 筆，超過時舊版 Ghostscript 會丟棄 CMap。
+    """
+    safe = re.sub(r"[^A-Za-z0-9_+-]", "-", fontname)
+    lines = [
+        "/CIDInit /ProcSet findresource begin",
+        "12 dict begin",
+        "begincmap",
+        "/CIDSystemInfo",
+        f"<< /Registry ({safe})",
+        f"/Ordering ({safe})",
+        "/Supplement 0",
+        ">> def",
+        f"/CMapName /{safe} def",
+        "/CMapType 2 def",
+        "1 begincodespacerange",
+        "<00> <%02X>" % (len(subset) - 1),
+        "endcodespacerange",
+    ]
+    entries = ["<%02X> <%04X>" % (i, v) for i, v in enumerate(subset)]
+    for i in range(0, len(entries), 100):
+        chunk = entries[i : i + 100]
+        lines.append(f"{len(chunk)} beginbfchar")
+        lines.extend(chunk)
+        lines.append("endbfchar")
+    lines.extend([
+        "endcmap",
+        "CMapName currentdict /CMap defineresource pop",
+        "end",
+        "end",
+    ])
+    return "\n".join(lines)
+
+
+ttfonts.makeToUnicodeCMap = _compliant_tounicode_cmap
 
 OUT = Path(__file__).parent / "corpus"
 OUT.mkdir(parents=True, exist_ok=True)
 random.seed(42)
 
-CJK_TTF = r"C:\Windows\Fonts\kaiu.ttf"      # 標楷體，單一字體檔好處理
-LATIN_TTF = r"C:\Windows\Fonts\arial.ttf"
+CJK_CANDIDATES = [
+    # Windows (TrueType CJK)
+    r"C:\Windows\Fonts\kaiu.ttf",
+    r"C:\Windows\Fonts\msjh.ttc",
+    r"C:\Windows\Fonts\simsun.ttc",
+    r"C:\Windows\Fonts\mingliu.ttc",
+    # macOS (TrueType CJK — PingFang.ttc 為 CFF 外框，ReportLab TTFont 不支援，故優先取 STHeiti / Songti)
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    # Linux (TrueType CJK — fonts-wqy-zenhei / fonts-arphic-ukai)
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/arphic/ukai.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+]
+
+CJK_TTF = None
+FONT_NAME = "Helvetica"
+
+
+def setup_font():
+    global CJK_TTF, FONT_NAME
+    if FONT_NAME == "CJK" and CJK_TTF:
+        return
+    for c in CJK_CANDIDATES:
+        p = Path(c)
+        if not p.exists():
+            continue
+        resolved = str(p.resolve())
+        try:
+            if resolved.lower().endswith(".ttc"):
+                font_obj = TTFont("CJK", resolved, subfontIndex=0)
+            else:
+                font_obj = TTFont("CJK", resolved)
+            if isinstance(getattr(font_obj.face, "name", None), bytes):
+                font_obj.face.name = re.sub(rb"[^A-Za-z0-9_+-]", b"-", font_obj.face.name)
+            pdfmetrics.registerFont(font_obj)
+            CJK_TTF = resolved
+            FONT_NAME = "CJK"
+            return
+        except Exception:
+            continue
+    FONT_NAME = "Helvetica"
+
+
+setup_font()
 
 PARA = (
     "本文件為壓縮測試語料，內容並無實質意義。中文字型內嵌會顯著影響檔案大小，"
     "因此語料必須包含足量的中文字元，才能反映實際使用情境下的壓縮表現。"
     "The quick brown fox jumps over the lazy dog. 0123456789. "
+) if FONT_NAME == "CJK" else (
+    "This synthetic document is prepared for compression and pipeline integration benchmarks. "
+    "The quick brown fox jumps over the lazy dog. 0123456789. "
+    "Standard synthetic lorem ipsum text for layout and rendering stability. "
 )
 
 
 def c1_text(pages=100):
     """純文字論文型：壓縮空間主要來自字型子集化與物件流。"""
-    pdfmetrics.registerFont(TTFont("CJK", CJK_TTF))
+    setup_font()
     path = OUT / "c1_text.pdf"
     c = canvas.Canvas(str(path), pagesize=A4)
     w, h = A4
     for p in range(pages):
-        c.setFont("CJK", 16)
-        c.drawString(60, h - 60, f"第 {p + 1} 章　壓縮測試文件")
-        c.setFont("CJK", 10.5)
+        c.setFont(FONT_NAME, 16)
+        c.drawString(60, h - 60, f"第 {p + 1} 章　壓縮測試文件" if FONT_NAME == "CJK" else f"Section {p + 1}: Synthetic Benchmark Corpus")
+        c.setFont(FONT_NAME, 10.5)
         y = h - 95
         for line in range(42):
             start = (p * 42 + line) * 17 % len(PARA)
@@ -53,7 +144,10 @@ def _scan_page(idx, dpi=300, w_in=8.27, h_in=11.69):
     w, h = int(w_in * dpi), int(h_in * dpi)
     img = Image.new("L", (w, h), 250)
     d = ImageDraw.Draw(img)
-    font = ImageFont.truetype(CJK_TTF, 40)
+    try:
+        font = ImageFont.truetype(CJK_TTF, 40) if CJK_TTF else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
     y = 300
     for line in range(38):
         start = (idx * 38 + line) * 13 % len(PARA)
@@ -101,7 +195,7 @@ def _photo(w=1600, h=1200):
 
 def c3_mixed(pages=20):
     """圖文混排型錄：一般使用者最常見的簡報/型錄。"""
-    pdfmetrics.registerFont(TTFont("CJK", CJK_TTF))
+    setup_font()
     path = OUT / "c3_mixed.pdf"
     c = canvas.Canvas(str(path), pagesize=A4)
     w, h = A4
@@ -111,9 +205,9 @@ def c3_mixed(pages=20):
         buf.seek(0)
         from reportlab.lib.utils import ImageReader
         c.drawImage(ImageReader(buf), 40, h - 340, width=w - 80, height=280)
-        c.setFont("CJK", 18)
-        c.drawString(40, h - 380, f"產品型號 A-{1000 + p}")
-        c.setFont("CJK", 10.5)
+        c.setFont(FONT_NAME, 18)
+        c.drawString(40, h - 380, f"產品型號 A-{1000 + p}" if FONT_NAME == "CJK" else f"Product Model A-{1000 + p}")
+        c.setFont(FONT_NAME, 10.5)
         y = h - 410
         for line in range(18):
             start = (p * 18 + line) * 19 % len(PARA)
@@ -126,31 +220,24 @@ def c3_mixed(pages=20):
 
 def c4_vector(pages=2):
     """向量圖形型：條碼、QR、向量商標、細線表格、色塊。
-
-    這類內容在 PDF 裡是一堆極細的填色矩形，不是點陣圖。轉檔工具常常把它們
-    當成雜訊丟掉——使用者看到的就是「條碼不見了」。
-
-    這份語料同時要能分辨三種東西，難就難在它們都由向量路徑構成：
-    * **密集圖形**（條碼、QR）——要保住，靠路徑密度認得出來
-    * **稀疏圖形**（商標）——要保住，但密度和框線一樣低，只能靠有曲線認出來
-    * **框線**（細線表格、色塊）——不能動，動了表格就變成一張圖
+    這類內容在 PDF 裡是一堆極細的填色矩形，不是點陣圖。
     """
     from reportlab.graphics.barcode import code128, qr
     from reportlab.graphics.shapes import Drawing
 
-    pdfmetrics.registerFont(TTFont("CJK", CJK_TTF))
+    setup_font()
     path = OUT / "c4_vector.pdf"
     c = canvas.Canvas(str(path), pagesize=A4)
     w, h = A4
 
     for p in range(pages):
-        c.setFont("CJK", 16)
-        c.drawString(50, h - 60, f"出貨單　第 {p + 1} 聯")
+        c.setFont(FONT_NAME, 16)
+        c.drawString(50, h - 60, f"出貨單　第 {p + 1} 聯" if FONT_NAME == "CJK" else f"Packing Slip #{p + 1}")
 
         # Code128 條碼：由寬窄不一的細長矩形組成，最細的只有零點幾 pt
         bc = code128.Code128(f"LPDF{p + 1:06d}", barHeight=42, barWidth=0.9)
         bc.drawOn(c, 50, h - 130)
-        c.setFont("CJK", 9)
+        c.setFont(FONT_NAME, 9)
         c.drawString(50, h - 145, f"LPDF{p + 1:06d}")
 
         # QR 碼：大量小方塊
@@ -167,9 +254,7 @@ def c4_vector(pages=2):
         c.line(50, h - 200, 50, h - 340)
         c.line(w - 50, h - 200, w - 50, h - 340)
 
-        # 向量商標：路徑少、攤得開，密度遠低於條碼——刻意用來測「稀疏向量圖形」。
-        # 有貝茲曲線，這是它和表格框線最好認的差別（框線只有直線與矩形）。
-        # 位置刻意避開表格框線：兩者靠太近會被併成同一個群集，就分不出誰是誰了。
+        # 向量商標
         cx, cy = w - 140, h - 405
         c.saveState()
         c.setStrokeColorRGB(0.1, 0.35, 0.6)
@@ -191,8 +276,8 @@ def c4_vector(pages=2):
         c.setFillColorRGB(0.85, 0.9, 0.97)
         c.rect(50, h - 430, 200, 60, fill=1, stroke=0)
         c.setFillColorRGB(0, 0, 0)
-        c.setFont("CJK", 10.5)
-        c.drawString(60, h - 400, "簽收欄")
+        c.setFont(FONT_NAME, 10.5)
+        c.drawString(60, h - 400, "簽收欄" if FONT_NAME == "CJK" else "Signature")
 
         c.showPage()
     c.save()

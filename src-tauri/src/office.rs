@@ -67,6 +67,7 @@ pub fn locate() -> Option<PathBuf> {
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn locate() -> Option<PathBuf> {
     crate::platform::find_on_system("soffice")
+        .or_else(|| crate::platform::find_on_system("libreoffice"))
 }
 
 /// 把本機路徑轉成 LibreOffice `-env:UserInstallation` 要的 file URL。
@@ -124,14 +125,12 @@ pub fn to_pdf(soffice: &Path, input: &Path, workdir: &Path, output: &Path) -> Re
     let mut cmd = Command::new(soffice);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let result = cmd
-        .arg(format!("-env:UserInstallation={profile_url}"))
+    cmd.arg(format!("-env:UserInstallation={profile_url}"))
         .args(["--headless", "--norestore", "--nolockcheck", "--nodefault"])
         .args(["--convert-to", "pdf", "--outdir"])
         .arg(&outdir)
-        .arg(input)
-        .output()
-        .map_err(|e| format!("無法執行 LibreOffice：{e}"))?;
+        .arg(input);
+    let result = crate::platform::run_with_timeout(cmd, 120)?;
 
     let produced = std::fs::read_dir(&outdir)
         .map_err(|e| format!("讀不到轉檔結果：{e}"))?
@@ -152,8 +151,8 @@ pub fn to_pdf(soffice: &Path, input: &Path, workdir: &Path, output: &Path) -> Re
     std::fs::rename(&produced, output)
         .or_else(|_| std::fs::copy(&produced, output).map(|_| ()))
         .map_err(|e| format!("無法取回轉檔結果：{e}"))?;
-    // 這個資料夾裡有 LibreOffice 寫下的中間檔與設定檔，用完立刻整個移除。
-    let _ = std::fs::remove_dir_all(workdir);
+    // 遞迴抹除 LibreOffice 產生的中間檔與 profile 目錄，落實暫存零覆寫承諾
+    crate::ephemeral::wipe_dir_all(workdir);
     Ok(())
 }
 

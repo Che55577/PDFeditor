@@ -5,6 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { Editor, type CanvasPoint } from "./editor";
+import { getLang, GROUP_I18N, toggleLang, TOOL_I18N, UI_TEXT } from "./i18n";
 import { extractLines } from "./mupdf-text";
 
 type Tool =
@@ -99,8 +100,10 @@ const statusEl = $<HTMLElement>("status");
 const engineEl = $<HTMLElement>("engine");
 const toolsEl = $<HTMLElement>("tools");
 const runBtn = $<HTMLButtonElement>("run");
+const cancelBtn = $<HTMLButtonElement>("cancel");
 const saveAllBtn = $<HTMLButtonElement>("saveAll");
 const clearBtn = $<HTMLButtonElement>("clear");
+const langBtn = $<HTMLButtonElement>("langToggle");
 
 /** 已勾選的功能。 */
 const selected = new Set<Tool>();
@@ -235,6 +238,7 @@ function renderFiles() {
 // ---- 功能勾選 ----
 
 function buildToolCards() {
+  const lang = getLang();
   toolsEl.innerHTML = "";
   for (const g of GROUPS) {
     const section = document.createElement("section");
@@ -242,15 +246,16 @@ function buildToolCards() {
     section.dataset.group = g;
 
     const title = document.createElement("h3");
-    title.textContent = g;
+    title.textContent = GROUP_I18N[g]?.[lang] ?? g;
     const grid = document.createElement("div");
     grid.className = "tool-grid";
 
     for (const t of TOOLS.filter((x) => x.group === g)) {
+      const [tLabel, tHint] = TOOL_I18N[t.id]?.[lang] ?? [t.label, t.hint];
       const label = document.createElement("label");
       label.className = "toolcard";
       label.dataset.tool = t.id;
-      label.dataset.search = `${t.label} ${t.hint} ${t.id}`;
+      label.dataset.search = `${t.label} ${t.hint} ${tLabel} ${tHint} ${t.id}`;
 
       const box = document.createElement("input");
       box.type = "checkbox";
@@ -260,9 +265,9 @@ function buildToolCards() {
       const text = document.createElement("span");
       text.className = "tooltext";
       const name = document.createElement("strong");
-      name.textContent = t.label;
+      name.textContent = tLabel;
       const hint = document.createElement("em");
-      hint.textContent = t.hint;
+      hint.textContent = tHint;
       text.append(name, hint);
 
       label.append(box, text);
@@ -691,13 +696,17 @@ function render() {
   const usable = files.filter((f) => !f.error).length;
   const needsTwo = selected.has("merge") && usable < 2;
 
+  const lang = getLang();
+  const ui = UI_TEXT[lang];
+  const toolTitle = (t: ToolSpec) => TOOL_I18N[t.id]?.[lang]?.[0] ?? t.label;
+
   // 收合狀態下也要看得到選了什麼，所以 chips 放在 summary 裡。
   const chipsEl = $<HTMLElement>("chips");
   chipsEl.innerHTML = "";
   if (chosen.length === 0) {
     const empty = document.createElement("span");
     empty.className = "chips-empty";
-    empty.textContent = "尚未選擇";
+    empty.textContent = ui.chipsEmpty;
     chipsEl.append(empty);
   } else {
     chosen.forEach((t, i) => {
@@ -709,27 +718,31 @@ function render() {
       }
       const chip = document.createElement("span");
       chip.className = "chip";
-      chip.textContent = t.label;
+      chip.textContent = toolTitle(t);
       chipsEl.append(chip);
     });
   }
 
   runBtn.disabled =
     busy || usable === 0 || chosen.length === 0 || needsTwo || (selected.has("annotate") && !!editor);
-  runBtn.textContent = busy ? "處理中…" : selected.has("annotate") ? "開啟編輯器" : "執行";
+  runBtn.textContent = busy ? ui.running : selected.has("annotate") ? ui.openEditor : ui.run;
+  cancelBtn.hidden = !busy;
+  cancelBtn.textContent = ui.cancel;
+  clearBtn.textContent = ui.clear;
+  saveAllBtn.textContent = ui.saveAll;
 
   $<HTMLElement>("plan").textContent =
     usable === 0
-      ? `先加入檔案（目前接受 ${accepting().name}）`
+      ? ui.planAddFiles(accepting().name)
       : chosen.length === 0
-        ? "已加入檔案，接著勾選功能"
+        ? ui.planPickTools
         : needsTwo
-          ? "「合併」至少需要兩個檔案"
+          ? ui.planNeedsTwo
           : selected.has("annotate")
-            ? `對 ${files[0]?.name ?? "檔案"} 開啟編輯器`
-            : `${usable} 個檔案　·　${chosen.map((t) => t.label).join(" → ")}`;
+            ? ui.planOpenEditor(files[0]?.name ?? "PDF")
+            : ui.planReady(usable, chosen.map(toolTitle).join(" → "));
 
-  $<HTMLElement>("acceptHint").textContent = `　（目前接受 ${accepting().name}）`;
+  $<HTMLElement>("acceptHint").textContent = ui.acceptHint(accepting().name);
   saveAllBtn.hidden = !results.some((r) => !r.error);
   clearBtn.hidden = results.length === 0 && files.length === 0;
   dropEl.classList.toggle("compact", files.length > 0);
@@ -757,6 +770,7 @@ let edStrokes: CanvasPoint[][] = [];
 let edDrawing = false;
 /** 塗黑框選的起點 */
 let edRectFrom: CanvasPoint | null = null;
+let edSnapshot: ImageData | null = null;
 
 const edColor = (): [number, number, number] => hexToRgb($<HTMLInputElement>("edColor").value);
 const edSize = () => Math.min(120, Math.max(6, num("edSize")));
@@ -842,10 +856,11 @@ function edPromptText(at: CanvasPoint, clientX: number, clientY: number) {
     }
   };
   input.onkeydown = (ev) => {
+    if (ev.isComposing) return;
     if (ev.key === "Enter") void finish(true);
     else if (ev.key === "Escape") void finish(false);
   };
-  input.onblur = () => void finish(false);
+  input.onblur = () => void finish(input.value.trim().length > 0);
 }
 
 /** 把目前累積的筆跡寫成註記。失敗一定要說出來，不能靜默丟掉。 */
@@ -888,6 +903,10 @@ edEls.canvas.onpointerdown = (e) => {
   }
   if (edMode === "redact") {
     edRectFrom = p;
+    const ctx = edEls.canvas.getContext("2d");
+    if (ctx) {
+      edSnapshot = ctx.getImageData(0, 0, edEls.canvas.width, edEls.canvas.height);
+    }
   } else {
     edStrokes = [[p]];
   }
@@ -906,21 +925,18 @@ edEls.canvas.onpointermove = (e) => {
   if (!ctx) return;
 
   if (edMode === "redact") {
-    if (!edRectFrom) return;
-    // 每次都重畫整頁再疊上目前的框，否則會留下一堆殘影
-    void editor.renderTo(edEls.canvas, edPage).then(() => {
-      const c = edEls.canvas.getContext("2d");
-      if (!c || !edRectFrom) return;
-      c.fillStyle = "rgb(0 0 0 / 0.55)";
-      c.strokeStyle = "rgb(200 0 0)";
-      c.lineWidth = 2;
-      const x = Math.min(edRectFrom.x, p.x);
-      const y = Math.min(edRectFrom.y, p.y);
-      const w = Math.abs(p.x - edRectFrom.x);
-      const h = Math.abs(p.y - edRectFrom.y);
-      c.fillRect(x, y, w, h);
-      c.strokeRect(x, y, w, h);
-    });
+    if (!edRectFrom || !edSnapshot) return;
+    // 使用快照原地還原，避免拖曳時每偵重複觸發 MuPDF WASM 重算
+    ctx.putImageData(edSnapshot, 0, 0);
+    ctx.fillStyle = "rgb(0 0 0 / 0.55)";
+    ctx.strokeStyle = "rgb(200 0 0)";
+    ctx.lineWidth = 2;
+    const x = Math.min(edRectFrom.x, p.x);
+    const y = Math.min(edRectFrom.y, p.y);
+    const w = Math.abs(p.x - edRectFrom.x);
+    const h = Math.abs(p.y - edRectFrom.y);
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
     return;
   }
 
@@ -944,6 +960,7 @@ edEls.canvas.onpointermove = (e) => {
 function edFinishDrag(e?: PointerEvent) {
   if (!edDrawing) return;
   edDrawing = false;
+  edSnapshot = null;
   if (edMode === "redact") {
     void edCommitRedaction(e ? edPoint(e) : (edRectFrom ?? { x: 0, y: 0 }));
   } else {
@@ -986,17 +1003,30 @@ $<HTMLButtonElement>("edClose").onclick = () => {
   edClose();
   setStatus("已關閉編輯器，未儲存的變更已丟棄。");
 };
+/** 高效將二進位資料轉為 Base64，避免大檔單字節字串拼接造成的記憶體膨脹或長度上限崩潰 */
+async function uint8ArrayToBase64(bytes: Uint8Array): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([bytes], { type: "application/octet-stream" });
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const comma = dataUrl.indexOf(",");
+      resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Base64 編碼失敗"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 $<HTMLButtonElement>("edSave").onclick = async () => {
   if (!editor) return;
   const redacted = editor.redactionCount;
   try {
     const bytes = editor.save();
-    // Rust 那側只收 base64；直接傳 Uint8Array 會變成 JSON 數字陣列。
-    let binary = "";
-    for (const b of bytes) binary += String.fromCharCode(b);
+    const dataBase64 = await uint8ArrayToBase64(bytes);
     const result = await invoke<JobResult>("save_edited", {
       name: edSource,
-      dataBase64: btoa(binary),
+      dataBase64,
     });
     results = [...results, result];
     edClose();
@@ -1012,20 +1042,53 @@ $<HTMLButtonElement>("edSave").onclick = async () => {
 
 // ---- 其餘接線 ----
 
+function applyLang() {
+  const lang = getLang();
+  const ui = UI_TEXT[lang];
+  langBtn.textContent = lang === "zh-TW" ? "EN" : "繁中";
+  $<HTMLElement>("headerSub").textContent = ui.sub;
+  $<HTMLElement>("dropTitle").textContent = ui.dropTitle;
+  $<HTMLElement>("dropOr").textContent = ui.dropOr;
+  $<HTMLButtonElement>("browse").textContent = ui.browse;
+  const sumTitle = document.querySelector<HTMLElement>(".summary-title");
+  if (sumTitle) sumTitle.textContent = ui.summaryTitle;
+  $<HTMLInputElement>("toolFilter").placeholder = ui.filterPlaceholder;
+  buildToolCards();
+  filterTools($<HTMLInputElement>("toolFilter").value);
+  render();
+}
+
+langBtn.onclick = () => {
+  toggleLang();
+  applyLang();
+};
+
 runBtn.onclick = runAll;
+cancelBtn.onclick = () => {
+  void invoke("cancel_pipeline");
+  setStatus(getLang() === "zh-TW" ? "正在取消操作…" : "Cancelling…");
+};
 saveAllBtn.onclick = saveAll;
 clearBtn.onclick = async () => {
   await invoke("discard_all");
   files = [];
   results = [];
-  setStatus("已清除所有暫存結果。");
+  setStatus(getLang() === "zh-TW" ? "已清除所有暫存結果。" : "Cleared all temporary results.");
   render();
 };
 
-$<HTMLButtonElement>("browse").onclick = async () => {
+async function openFilePicker() {
   const picked = await open({ multiple: true, filters: [accepting()] });
   if (Array.isArray(picked)) await addFiles(picked);
   else if (typeof picked === "string") await addFiles([picked]);
+}
+
+$<HTMLButtonElement>("browse").onclick = openFilePicker;
+dropEl.onkeydown = (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    void openFilePicker();
+  }
 };
 
 $<HTMLButtonElement>("stampPick").onclick = async () => {
@@ -1058,10 +1121,21 @@ try {
 }
 
 try {
-  listen<{ index: number; total: number; name: string }>("op:progress", (e) => {
-    const { index, total, name } = e.payload;
-    setStatus(total > 1 ? `步驟 ${index + 1}/${total}：${name}` : `處理中：${name}`);
-  });
+  listen<{ index: number; total: number; name: string; fileIndex?: number; fileTotal?: number }>(
+    "op:progress",
+    (e) => {
+      const { index, total, name, fileIndex, fileTotal } = e.payload;
+      const filePart =
+        fileTotal && fileTotal > 1 && typeof fileIndex === "number"
+          ? `（檔案 ${fileIndex + 1}/${fileTotal}）`
+          : "";
+      setStatus(
+        total > 1
+          ? `步驟 ${index + 1}/${total}：${name}${filePart}`
+          : `處理中：${name}${filePart}`,
+      );
+    },
+  );
 } catch (e) {
   console.warn("無法註冊進度事件：", e);
 }
@@ -1111,6 +1185,7 @@ $<HTMLInputElement>("toolFilter").oninput = (e) =>
   filterTools((e.target as HTMLInputElement).value);
 
 buildToolCards();
+applyLang();
 edSetMode("text");
 void loadFonts();
 void showEngines();

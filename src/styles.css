@@ -46,6 +46,13 @@ main { max-width: 720px; margin: 0 auto; }
 
 h1 { margin: 0 0 4px; font-size: 1.45rem; }
 
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .sub { margin: 0; color: var(--dim); font-size: 0.85rem; line-height: 1.5; }
 
 .engine { margin: 8px 0 0; font-size: 0.78rem; }
@@ -244,9 +251,11 @@ h1 { margin: 0 0 4px; font-size: 1.45rem; }
   text-align: center;
   transition: border-color 0.15s, background 0.15s, padding 0.15s;
 }
-.drop.over {
+.drop.over,
+.drop:focus-visible {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  outline: none;
 }
 /* 已經有檔案之後縮小，把版面讓給檔案清單 */
 .drop.compact { padding: 16px; }

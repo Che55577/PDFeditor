@@ -9,7 +9,6 @@
 //! 命令列參數在行程清單裡是公開的——同一台機器的其他使用者用工作管理員就看得到。
 //! 所以走 qpdf 的 `@-`：參數從 stdin 一行一個讀進去，密碼既不進行程清單也不落地。
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -34,28 +33,22 @@ pub fn version(qpdf: &Path) -> Result<String> {
 
 /// 執行 qpdf，參數一律從 stdin 傳。回傳 stdout。
 fn run(qpdf: &Path, args: &[String]) -> Result<String> {
+    for arg in args {
+        if arg.contains('\n') || arg.contains('\r') {
+            return Err("參數不能包含換行字元".into());
+        }
+    }
+
     let mut cmd = Command::new(qpdf);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.arg("@-");
 
-    let mut child = cmd
-        .arg("@-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("無法執行 qpdf：{e}"))?;
+    // 一行一個參數，這是 qpdf 對 @- 的約定
+    let joined = args.join("\n");
+    let out = crate::platform::run_with_timeout_stdin(cmd, Some(joined.as_bytes()), 60)
+        .map_err(|e| format!("qpdf 執行失敗：{e}"))?;
 
-    {
-        let stdin = child.stdin.as_mut().ok_or("無法寫入 qpdf")?;
-        // 一行一個參數，這是 qpdf 對 @- 的約定
-        let joined = args.join("\n");
-        stdin
-            .write_all(joined.as_bytes())
-            .map_err(|e| format!("無法傳送參數給 qpdf：{e}"))?;
-    }
-
-    let out = child.wait_with_output().map_err(|e| format!("qpdf 執行失敗：{e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let msg = err.lines().next_back().unwrap_or("未知錯誤").trim();
@@ -88,6 +81,9 @@ pub fn encrypt(qpdf: &Path, input: &Path, output: &Path, user: &str, owner: &str
     if user.is_empty() && owner.is_empty() {
         return Err("請至少設定一個密碼".into());
     }
+    if user.contains('\n') || user.contains('\r') || owner.contains('\n') || owner.contains('\r') {
+        return Err("密碼不能包含換行字元".into());
+    }
     // 沒指定擁有者密碼時沿用使用者密碼——留空等於任何人都能移除保護。
     let owner = if owner.is_empty() { user } else { owner };
 
@@ -108,11 +104,15 @@ pub fn encrypt(qpdf: &Path, input: &Path, output: &Path, user: &str, owner: &str
 
 /// 移除密碼保護。**需要使用者提供正確密碼**，不做任何破解。
 pub fn decrypt(qpdf: &Path, input: &Path, output: &Path, password: &str) -> Result<()> {
+    if password.contains('\n') || password.contains('\r') {
+        return Err("密碼不能包含換行字元".into());
+    }
     run(
         qpdf,
         &[
             format!("--password={password}"),
             "--decrypt".into(),
+            "--".into(),
             input.to_string_lossy().into_owned(),
             output.to_string_lossy().into_owned(),
         ],

@@ -18,6 +18,7 @@ set -euo pipefail
 
 GS_VERSION="${GS_VERSION:-10.07.1}"
 GS_TAG="${GS_TAG:-gs10071}"
+GS_SHA256="2fc74362f9be6fae1b0a65d38fdcfd4f0b518cc3b07c5581fb661eb4d2e15251"
 ARCH="${ARCH:-$(uname -m)}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,9 +30,18 @@ URL="https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/$GS
 [[ "$(uname -s)" == "Darwin" ]] || { echo "只能在 macOS 上執行" >&2; exit 1; }
 
 mkdir -p "$CACHE"
+if [[ -f "$TARBALL" ]]; then
+  actual="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+  if [[ "$actual" != "$GS_SHA256" ]]; then
+    echo "[gs] 快取 SHA-256 不符，重新下載"
+    rm -f "$TARBALL"
+  fi
+fi
 if [[ ! -f "$TARBALL" ]]; then
   echo "[gs] 下載 $URL"
   curl -fL --retry 3 -o "$TARBALL.part" "$URL"
+  actual="$(shasum -a 256 "$TARBALL.part" | awk '{print $1}')"
+  [[ "$actual" == "$GS_SHA256" ]] || { echo "[gs] SHA-256 校驗失敗：$actual" >&2; rm -f "$TARBALL.part"; exit 1; }
   mv "$TARBALL.part" "$TARBALL"
 fi
 
@@ -45,20 +55,28 @@ build_one() {
   echo "[gs] 編譯 $arch"
   (
     cd "$work"
-    # 不讓 configure 撿到 Homebrew 的函式庫——撿到就會動態連結，App 搬到別台 Mac 就壞了。
+    # 徹底隔離 Homebrew：Ghostscript 的 configure.ac 檢查的是 PKGCONFIG（無底線）而非 PKG_CONFIG！
+    # 同時將 PATH 限制為純系統目錄，防止 configure 撿到 /opt/homebrew 下的動態庫。
+    export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+    export PKGCONFIG=/usr/bin/false
     export PKG_CONFIG=/usr/bin/false
     export CC="clang -arch $arch"
-    export CFLAGS="-O2 -mmacosx-version-min=11.0"
+    export CFLAGS="-O2 -mmacosx-version-min=11.0 -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-function-pointer-types"
     export LDFLAGS="-mmacosx-version-min=11.0"
     ./configure \
-      --disable-cups --disable-dbus --disable-gtk --disable-fontconfig \
+      --disable-cups --disable-dbus --disable-gtk --disable-fontconfig --disable-contrib \
+      --with-libiconv=no --with-local-zlib --with-drivers=FILES \
       --without-x --without-libidn --without-libpaper --without-tesseract \
-      --without-ijs --without-pdftoraster \
+      --without-ijs --without-pdftoraster --without-cal --without-so \
       --enable-compile-inits \
-      > "$work/configure.log" 2>&1 || { tail -40 "$work/configure.log"; exit 1; }
-    make -j"$(sysctl -n hw.ncpu)" > "$work/make.log" 2>&1 || { tail -40 "$work/make.log"; exit 1; }
+      > "$work/configure.log" 2>&1 || { tail -50 "$work/configure.log"; exit 1; }
+    make -j"$(sysctl -n hw.ncpu)" > "$work/make.log" 2>&1 || { tail -50 "$work/make.log"; exit 1; }
   )
   strip -x "$work/bin/gs"
+  if [[ -f "$work/LICENSE" ]]; then
+    mkdir -p "$ROOT/vendor/ghostscript"
+    cp "$work/LICENSE" "$ROOT/vendor/ghostscript/LICENSE"
+  fi
 }
 
 case "$ARCH" in
@@ -94,5 +112,5 @@ if [[ -n "$bad" ]]; then
 fi
 
 ver="$("$DEST/gs" --version)"
-[[ "$ver" == "$GS_VERSION" ]] || { echo "[gs] 版本不符：$ver" >&2; exit 1; }
-echo "[gs] 完成：$DEST/gs（$ver，$(du -h "$DEST/gs" | cut -f1)，$(lipo -archs "$DEST/gs")）"
+[[ "$ver" == "$GS_VERSION" ]] || { echo "[gs] 版本不符：${ver}" >&2; exit 1; }
+echo "[gs] 完成：${DEST}/gs（${ver}，$(du -h "$DEST/gs" | cut -f1)，$(lipo -archs "$DEST/gs")）"

@@ -39,11 +39,16 @@ TARGETS = {
     ("darwin", "arm64"): "aarch64-apple-darwin",
     ("darwin", "aarch64"): "aarch64-apple-darwin",
     ("darwin", "x86_64"): "x86_64-apple-darwin",
+    ("linux", "x86_64"): "x86_64-unknown-linux-gnu",
+    ("linux", "amd64"): "x86_64-unknown-linux-gnu",
+    ("linux", "aarch64"): "aarch64-unknown-linux-gnu",
+    ("linux", "arm64"): "aarch64-unknown-linux-gnu",
 }
 
 # pdf2docx 預設會拉進完整的 opencv-python（112 MB）。headless 版少了 GUI 相關的
 # 部分，功能上對我們完全等價，可以省下約 70 MB。
-PACKAGES = ["pdf2docx"]
+# 鎖定依賴版本，確保供應鏈完整性與建置重現性
+PACKAGES = ["pdf2docx==0.5.8", "opencv-python-headless==4.10.0.84", "PyMuPDF==1.24.14"]
 REPLACE_OPENCV = ("opencv-python", "opencv-python-headless")
 
 # 這些在執行期用不到，但佔的空間很可觀

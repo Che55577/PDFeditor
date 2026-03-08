@@ -137,6 +137,26 @@ pub fn inherited_rect(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[
     None
 }
 
+/// Rotate 也是可繼承屬性（PDF 32000-1 §7.7.3.3）。
+pub fn inherited_rotation(doc: &Document, page_id: ObjectId) -> i64 {
+    let mut id = page_id;
+    for _ in 0..32 {
+        if let Ok(dict) = doc.get_object(id).and_then(Object::as_dict) {
+            if let Ok(obj) = dict.get(b"Rotate") {
+                if let Ok(r) = obj.as_i64() {
+                    return r.rem_euclid(360);
+                }
+            }
+            if let Ok(parent) = dict.get(b"Parent").and_then(Object::as_reference) {
+                id = parent;
+                continue;
+            }
+        }
+        break;
+    }
+    0
+}
+
 /// 依邊界裁切。以現有的 CropBox 為基準，沒有才退回 MediaBox。
 pub fn crop(input: &Path, m: Margins, targets: &[u32], output: &Path) -> Result<()> {
     if [m.left, m.bottom, m.right, m.top].iter().any(|v| *v < 0.0) {
@@ -258,6 +278,10 @@ pub fn merge(inputs: &[&Path], output: &Path) -> Result<()> {
     let mut objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
     let mut order: Vec<ObjectId> = Vec::new();
     let mut next_id = 1u32;
+    let mut outline_roots: Vec<ObjectId> = Vec::new();
+    let mut acroform_roots: Vec<ObjectId> = Vec::new();
+    let mut acroform_fields: Vec<Object> = Vec::new();
+    let mut first_names: Option<Object> = None;
 
     for path in inputs {
         let mut doc = load(path)?;
@@ -265,16 +289,38 @@ pub fn merge(inputs: &[&Path], output: &Path) -> Result<()> {
         doc.renumber_objects_with(next_id);
         next_id = doc.max_id + 1;
 
+        if let Ok(cat_id) = doc.trailer.get(b"Root").and_then(Object::as_reference) {
+            if let Ok(cat) = doc.get_dictionary(cat_id).cloned() {
+                if let Ok(outl) = cat.get(b"Outlines").and_then(Object::as_reference) {
+                    outline_roots.push(outl);
+                }
+                if first_names.is_none() {
+                    if let Ok(names_obj) = cat.get(b"Names") {
+                        first_names = Some(names_obj.clone());
+                    }
+                }
+                if let Ok(form_id) = cat.get(b"AcroForm").and_then(Object::as_reference) {
+                    acroform_roots.push(form_id);
+                    if let Ok(form_dict) = doc.get_dictionary(form_id) {
+                        if let Ok(fields) = form_dict.get(b"Fields").and_then(Object::as_array) {
+                            acroform_fields.extend(fields.iter().cloned());
+                        }
+                    }
+                }
+            }
+        }
+
         // get_pages 依頁碼排序，所以頁序在合併後仍然正確。
         order.extend(doc.get_pages().into_values());
         objects.extend(std::mem::take(&mut doc.objects));
     }
 
     // 每份來源文件都帶著自己的 Catalog 與 Pages 節點，全部丟掉，稍後重建一組。
+    // 保留 Outlines 與 AcroForm 等內容字典。
     objects.retain(|_, obj| {
         !matches!(
             obj.type_name().unwrap_or_default(),
-            b"Catalog" | b"Pages" | b"Outlines"
+            b"Catalog" | b"Pages"
         )
     });
 
@@ -290,6 +336,20 @@ pub fn merge(inputs: &[&Path], output: &Path) -> Result<()> {
     let mut catalog = Dictionary::new();
     catalog.set("Type", Object::Name(b"Catalog".to_vec()));
     catalog.set("Pages", Object::Reference(pages_id));
+    if let Some(&first_outline) = outline_roots.first() {
+        catalog.set("Outlines", Object::Reference(first_outline));
+    }
+    if let Some(names_obj) = first_names {
+        catalog.set("Names", names_obj);
+    }
+    if let Some(&first_acroform) = acroform_roots.first() {
+        if acroform_roots.len() > 1 && !acroform_fields.is_empty() {
+            if let Ok(Object::Dictionary(ref mut form_dict)) = merged.get_object_mut(first_acroform) {
+                form_dict.set("Fields", Object::Array(acroform_fields));
+            }
+        }
+        catalog.set("AcroForm", Object::Reference(first_acroform));
+    }
     let catalog_id = merged.add_object(catalog);
     merged.trailer.set("Root", catalog_id);
 

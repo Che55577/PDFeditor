@@ -26,7 +26,7 @@ pub enum Level {
 impl Level {
     /// 影像參數。數值由 `bench/compress_bench.py` 實測後決定，改動請附上新數據。
     ///
-    /// v0.1 基準 實測（Ghostscript 10.07.1，數字為輸出/原始大小，括號為 SSIM）：
+    /// 基準實測數據（Ghostscript 10.07.1，數字為輸出/原始大小，括號為 SSIM）：
     ///
     /// |            | 300dpi 掃描件 32MB | 照片型錄 8.8MB | 純文字 |
     /// |------------|--------------------|----------------|--------|
@@ -136,13 +136,12 @@ pub fn version(gs: &Path) -> Result<String, String> {
 
 /// 壓縮單一檔案。input 與 output 必須是不同路徑。
 pub fn compress(gs: &Path, input: &Path, output: &Path, level: Level) -> Result<(), String> {
-    let out = build_cmd(gs)
-        .args(base_args())
+    let mut cmd = build_cmd(gs);
+    cmd.args(base_args())
         .args(level.args())
         .arg(format!("-sOutputFile={}", output.display()))
-        .arg(input)
-        .output()
-        .map_err(|e| format!("無法執行壓縮引擎：{e}"))?;
+        .arg(input);
+    let out = run_gs(cmd, 120)?;
 
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -197,8 +196,8 @@ pub fn render_page(
     if !(20..=600).contains(&dpi) {
         return Err("解析度請設在 20 到 600 dpi 之間".into());
     }
-    let result = build_cmd(gs)
-        .args(["-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET"])
+    let mut cmd = build_cmd(gs);
+    cmd.args(["-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET"])
         .args(format.device_args())
         // 依 CropBox 出圖，否則裁切過的頁面會把已裁掉的部分又畫回來。
         .arg("-dUseCropBox")
@@ -206,9 +205,8 @@ pub fn render_page(
         .arg(format!("-dFirstPage={page}"))
         .arg(format!("-dLastPage={page}"))
         .arg(format!("-sOutputFile={}", out.display()))
-        .arg(input)
-        .output()
-        .map_err(|e| format!("無法執行轉檔引擎：{e}"))?;
+        .arg(input);
+    let result = run_gs(cmd, 60)?;
 
     if !result.status.success() {
         let err = String::from_utf8_lossy(&result.stderr);
@@ -230,18 +228,17 @@ pub fn render_page(
 ///
 /// 輸出導到 stdout 而不是暫存檔：文字內容一個位元組都不落地。
 pub fn extract_text(gs: &Path, input: &Path) -> Result<String, String> {
-    let out = build_cmd(gs)
-        .args([
-            "-dSAFER",
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-dQUIET",
-            "-sDEVICE=txtwrite",
-            "-sOutputFile=-",
-        ])
-        .arg(input)
-        .output()
-        .map_err(|e| format!("無法執行文字抽取：{e}"))?;
+    let mut cmd = build_cmd(gs);
+    cmd.args([
+        "-dSAFER",
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dQUIET",
+        "-sDEVICE=txtwrite",
+        "-sOutputFile=-",
+    ])
+    .arg(input);
+    let out = run_gs(cmd, 60)?;
 
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -261,8 +258,8 @@ pub fn extract_text(gs: &Path, input: &Path) -> Result<String, String> {
 /// 這裡刻意關掉所有降採樣並保留原始 JPEG：使用者要的是「把檔案救回來」，
 /// 不是順便被壓縮。修復後想縮小，再跑一次壓縮工具即可。
 pub fn repair(gs: &Path, input: &Path, output: &Path) -> Result<(), String> {
-    let result = build_cmd(gs)
-        .args(base_args())
+    let mut cmd = build_cmd(gs);
+    cmd.args(base_args())
         .args([
             "-dPDFSTOPONERROR=false",
             "-dPDFSTOPONWARNING=false",
@@ -273,9 +270,8 @@ pub fn repair(gs: &Path, input: &Path, output: &Path) -> Result<(), String> {
             "-dPassThroughJPEGImages=true",
         ])
         .arg(format!("-sOutputFile={}", output.display()))
-        .arg(input)
-        .output()
-        .map_err(|e| format!("無法執行修復引擎：{e}"))?;
+        .arg(input);
+    let result = run_gs(cmd, 120)?;
 
     // 損毀檔幾乎一定會噴警告，所以不能把 stderr 有內容當成失敗；
     // 唯一可靠的判準是「有沒有生出一份讀得開的 PDF」。
@@ -291,11 +287,16 @@ pub fn repair(gs: &Path, input: &Path, output: &Path) -> Result<(), String> {
     }
 }
 
+#[allow(unused_mut)]
 fn build_cmd(gs: &Path) -> Command {
     let mut cmd = Command::new(gs);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd
+}
+
+fn run_gs(cmd: Command, timeout_secs: u64) -> Result<std::process::Output, String> {
+    crate::platform::run_with_timeout(cmd, timeout_secs)
 }
 
 #[cfg(test)]

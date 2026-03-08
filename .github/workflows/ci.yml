@@ -10,16 +10,35 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: 安裝 Linux 系統相依套件
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            ghostscript \
+            qpdf \
+            fonts-noto-cjk \
+            fonts-arphic-ukai \
+            fonts-wqy-zenhei
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -33,13 +52,18 @@ jobs:
           path: |
             vendor/ghostscript
             vendor/qpdf
-          key: vendor-${{ runner.os }}-${{ runner.arch }}-gs10.07.1-qpdf12.4.2
+          key: vendor-${{ runner.os }}-${{ runner.arch }}-gs10.07.1-qpdf12.4.2-v2
 
       - name: 安裝前端相依與同步 MuPDF
         run: npm ci
 
       - name: 取得 Ghostscript 與 qpdf
         run: npm run fetch:vendor
+
+      - name: 準備整合測試語料庫
+        run: |
+          pip install reportlab pillow
+          python bench/make_corpus.py
 
       - name: 前端型別檢查與打包
         run: npm run build

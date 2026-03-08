@@ -9,20 +9,23 @@
 
   <body>
     <main>
-      <header>
-        <h1>LocalPDF</h1>
-        <p class="sub">檔案不離開這台電腦。處理結果在你存檔或關閉視窗後立即從暫存區抹除。</p>
+      <header class="top-header">
+        <div class="header-row">
+          <h1>LocalPDF</h1>
+          <button id="langToggle" type="button" class="ghost tiny" aria-label="切換語言 / Switch Language">EN</button>
+        </div>
+        <p id="headerSub" class="sub">檔案不離開這台電腦。處理結果在你存檔或關閉視窗後立即從暫存區抹除。</p>
       </header>
 
-      <section id="drop" class="drop">
+      <section id="drop" class="drop" tabindex="0" role="button" aria-label="把檔案拖進來，或按 Enter 選擇檔案">
         <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 16V4m0 0L7 9m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8"
                 stroke-linecap="round" stroke-linejoin="round" />
           <path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16" fill="none"
                 stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
         </svg>
-        <p class="drop-title">把檔案拖進來</p>
-        <p class="drop-sub">或<button id="browse" class="link" type="button">選擇檔案</button><span id="acceptHint"></span></p>
+        <p id="dropTitle" class="drop-title">把檔案拖進來</p>
+        <p class="drop-sub"><span id="dropOr">或</span><button id="browse" class="link" type="button">選擇檔案</button><span id="acceptHint"></span></p>
       </section>
 
       <ul id="files" class="filelist"></ul>
@@ -309,6 +312,7 @@
         <span id="plan" class="plan">先加入檔案並勾選功能</span>
         <button id="clear" type="button" class="ghost" hidden>清除</button>
         <button id="saveAll" type="button" class="ghost" hidden>全部儲存…</button>
+        <button id="cancel" type="button" class="ghost" hidden>取消</button>
         <button id="run" type="button" disabled>執行</button>
       </div>
     </div>

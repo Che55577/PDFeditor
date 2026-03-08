@@ -12,18 +12,20 @@
 產出: bench/corpus/tables_*.pdf 與 bench/corpus/tables_truth.json
 """
 import json
+import sys
 from pathlib import Path
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+sys.path.insert(0, str(Path(__file__).parent))
+from make_corpus import FONT_NAME, setup_font  # noqa: E402
 
 OUT = Path(__file__).parent / "corpus"
 OUT.mkdir(parents=True, exist_ok=True)
-pdfmetrics.registerFont(TTFont("CJK", r"C:\Windows\Fonts\kaiu.ttf"))
+setup_font()
 
 HEADER = ["項次", "品名", "數量", "單價", "小計"]
 ROWS = [
@@ -37,8 +39,8 @@ ROWS = [
     ["8", "碎紙機", "1", "4,500", "4,500"],
 ]
 
-BODY = ParagraphStyle("body", fontName="CJK", fontSize=10.5, leading=16)
-TITLE = ParagraphStyle("title", fontName="CJK", fontSize=15, leading=22, spaceAfter=10)
+BODY = ParagraphStyle("body", fontName=FONT_NAME, fontSize=10.5, leading=16)
+TITLE = ParagraphStyle("title", fontName=FONT_NAME, fontSize=15, leading=22, spaceAfter=10)
 
 
 def build(name: str, style: TableStyle, data: list[list[str]], note: str):
@@ -57,7 +59,7 @@ def build(name: str, style: TableStyle, data: list[list[str]], note: str):
 
 
 BASE = [
-    ("FONTNAME", (0, 0), (-1, -1), "CJK"),
+    ("FONTNAME", (0, 0), (-1, -1), FONT_NAME),
     ("FONTSIZE", (0, 0), (-1, -1), 10),
     ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),

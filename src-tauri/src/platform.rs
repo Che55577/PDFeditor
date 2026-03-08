@@ -45,11 +45,94 @@ pub fn find_bundled(resource_dir: Option<&Path>, rel: &str, also_beside_exe: boo
     candidates.into_iter().find(|p| p.exists())
 }
 
+/// 帶逾時與取消保護的子行程執行，並以背景執行緒並行排空 stdout/stderr 防止管道緩衝區死鎖。
+pub fn run_with_timeout(cmd: std::process::Command, timeout_secs: u64) -> Result<std::process::Output, String> {
+    run_with_timeout_stdin(cmd, None, timeout_secs)
+}
+
+/// 帶選用 stdin 輸入、逾時與取消保護的子行程執行。
+pub fn run_with_timeout_stdin(
+    mut cmd: std::process::Command,
+    stdin_data: Option<&[u8]>,
+    timeout_secs: u64,
+) -> Result<std::process::Output, String> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+
+    if stdin_data.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("無法啟動外部行程：{e}"))?;
+
+    if let Some(data) = stdin_data {
+        let mut stdin = child.stdin.take().ok_or_else(|| "無法取得子行程 stdin".to_string())?;
+        stdin
+            .write_all(data)
+            .map_err(|e| format!("無法傳送參數給子行程：{e}"))?;
+        // 立即釋放 stdin 以送出 EOF，避免讀取 stdin 的工具（如 qpdf @-）無限等待。
+        drop(stdin);
+    }
+
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut r) = out_pipe {
+            let _ = r.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(ref mut r) = err_pipe {
+            let _ = r.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let start = std::time::Instant::now();
+    let max_dur = std::time::Duration::from_secs(timeout_secs);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {
+                if crate::is_cancelled() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("操作已取消".into());
+                }
+                if start.elapsed() >= max_dur {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("外部行程執行逾時（超過 {timeout_secs} 秒）"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("監控行程失敗：{e}"));
+            }
+        }
+    };
+
+    let stdout = out_thread.join().unwrap_or_default();
+    let stderr = err_thread.join().unwrap_or_default();
+    Ok(std::process::Output { status, stdout, stderr })
+}
+
 /// 系統上的工具（開發用的備援；正式版一律優先用內嵌的，避免版本行為飄移）。
 #[cfg(not(windows))]
 pub fn find_on_system(name: &str) -> Option<PathBuf> {
-    // GUI App 不會繼承 shell 的 PATH，所以 Homebrew 的位置要明列。
-    let mut dirs: Vec<PathBuf> = vec!["/opt/homebrew/bin".into(), "/usr/local/bin".into()];
+    // GUI App 不會繼承 shell 的 PATH，所以 Homebrew 與系統常見位置要明列。
+    let mut dirs: Vec<PathBuf> = vec![
+        "/opt/homebrew/bin".into(),
+        "/usr/local/bin".into(),
+        "/usr/bin".into(),
+        "/snap/bin".into(),
+    ];
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
@@ -77,7 +160,17 @@ pub fn font_dirs() -> Vec<PathBuf> {
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let mut dirs: Vec<PathBuf> = vec!["/usr/share/fonts".into(), "/usr/local/share/fonts".into()];
+        let mut dirs: Vec<PathBuf> = vec![
+            "/usr/share/fonts".into(),
+            "/usr/share/fonts/opentype/noto".into(),
+            "/usr/share/fonts/truetype/noto".into(),
+            "/usr/share/fonts/noto-cjk".into(),
+            "/usr/share/fonts/google-noto-cjk".into(),
+            "/usr/share/fonts/truetype/dejavu".into(),
+            "/usr/share/fonts/TTF".into(),
+            "/usr/local/share/fonts".into(),
+            "/system/fonts".into(),
+        ];
         if let Some(home) = std::env::var_os("HOME") {
             dirs.push(PathBuf::from(home).join(".local/share/fonts"));
         }
@@ -103,14 +196,24 @@ const CANDIDATES: &[Candidate] = &[
     Candidate { label: "Calibri", file: "calibri.ttf", family: None },
 ];
 
-/// macOS 預設沒有標楷體；有些人會自行安裝 kaiu.ttf，所以仍然排第一。
-/// 系統內建的中文字型都是 .ttc，裡面同時有簡繁與多種字重，要按家族名稱挑。
-#[cfg(not(windows))]
+/// macOS 預設沒有標楷體；系統內建的中文字型都是 .ttc，按家族名稱挑選。
+#[cfg(target_os = "macos")]
 const CANDIDATES: &[Candidate] = &[
     Candidate { label: "標楷體", file: "kaiu.ttf", family: None },
     Candidate { label: "蘋方-繁", file: "PingFang.ttc", family: Some("PingFang TC") },
     Candidate { label: "黑體-繁", file: "STHeiti Medium.ttc", family: Some("Heiti TC") },
     Candidate { label: "宋體-繁", file: "Songti.ttc", family: Some("Songti TC") },
+    Candidate { label: "Arial", file: "Arial.ttf", family: None },
+];
+
+/// Linux 發行版主流使用 Noto 與 DejaVu 字型。
+#[cfg(all(not(windows), not(target_os = "macos")))]
+const CANDIDATES: &[Candidate] = &[
+    Candidate { label: "思源黑體", file: "NotoSansCJK-Regular.ttc", family: Some("Noto Sans CJK TC") },
+    Candidate { label: "思源黑體", file: "NotoSansTC-Regular.otf", family: None },
+    Candidate { label: "思源宋體", file: "NotoSerifCJK-Regular.ttc", family: Some("Noto Serif CJK TC") },
+    Candidate { label: "標楷體", file: "kaiu.ttf", family: None },
+    Candidate { label: "DejaVu Sans", file: "DejaVuSans.ttf", family: None },
     Candidate { label: "Arial", file: "Arial.ttf", family: None },
 ];
 

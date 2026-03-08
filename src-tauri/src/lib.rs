@@ -13,11 +13,24 @@ mod pyext;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use ephemeral::Ephemeral;
 use gs::Level;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+/// 全域取消旗標，讓前端可隨時中止執行中的批次管線與外部子行程。
+static CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_cancelled() -> bool {
+    CANCEL_REQUESTED.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn cancel_pipeline() {
+    CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+}
 
 struct AppState {
     /// 壓縮引擎路徑。找不到時為 None，UI 會顯示引擎缺失而不是讓每次操作都失敗。
@@ -373,6 +386,9 @@ fn save_edited(
     name: String,
     data_base64: String,
 ) -> Result<JobResult, String> {
+    if data_base64.len() > 500 * 1024 * 1024 {
+        return Err("檔案過大，超出編輯器儲存限制".into());
+    }
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_base64.as_bytes())
@@ -479,6 +495,8 @@ async fn run_pipeline(
         .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
         .sum();
 
+    CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+
     let mut items: Vec<Item> = paths
         .into_iter()
         .map(|p| Item { path: PathBuf::from(p), suffix: String::new(), keep: None })
@@ -487,10 +505,9 @@ async fn run_pipeline(
     let mut extension = "pdf";
 
     for (step, op) in ops.iter().enumerate() {
-        let _ = app.emit(
-            "op:progress",
-            serde_json::json!({ "index": step, "total": steps, "name": op.label() }),
-        );
+        if is_cancelled() {
+            return Err("操作已取消".into());
+        }
         extension = op.extension();
 
         // 合併與圖片轉 PDF 是「多進一出」，整批送進去跑一次；其餘每份各跑一次。
@@ -499,9 +516,23 @@ async fn run_pipeline(
         } else {
             items.iter().map(|i| vec![i]).collect()
         };
+        let batch_total = batches.len();
 
         let mut next: Vec<Item> = Vec::new();
-        for batch in batches {
+        for (batch_idx, batch) in batches.into_iter().enumerate() {
+            if is_cancelled() {
+                return Err("操作已取消".into());
+            }
+            let _ = app.emit(
+                "op:progress",
+                serde_json::json!({
+                    "index": step,
+                    "total": steps,
+                    "name": op.label(),
+                    "fileIndex": batch_idx,
+                    "fileTotal": batch_total,
+                }),
+            );
             let batch_paths: Vec<String> =
                 batch.iter().map(|i| i.path.to_string_lossy().to_string()).collect();
             let carried = batch[0].suffix.clone();
@@ -1184,6 +1215,7 @@ pub fn run() {
             save_edited,
             run_pipeline,
             run_op,
+            cancel_pipeline,
             save_job,
             discard_all
         ])

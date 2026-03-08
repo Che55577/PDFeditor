@@ -3,7 +3,7 @@
 一句話結論：**LibreOffice 那條路是死的，pdf2docx 可用但要背 100 MB，
 而多數人真正要的其實是 Markdown。**
 
-以下數字都是在這台機器上實測的，不是引用他人說法。重跑方式見 `bench/`。
+以下數字皆為基準語料實測結果，重跑方式見 `bench/`。
 
 ## 一、PDF → Word
 
@@ -80,8 +80,8 @@ pdf2docx 是 Python 的，執行期需要：
 
 ### 授權
 
-PyMuPDF 是 AGPL，本專案也是 AGPL，相容。
-但要注意 **pdf2docx 已不再由 Artifex 維護**（MIT 授權，社群可自行 fork）。
+PyMuPDF 是 AGPL-3.0，pdf2docx 是 GPL-3.0，本專案採 AGPL-3.0，授權相容。
+但要注意 **pdf2docx 已不再由 Artifex 積極維護**（GPL-3.0 授權，社群可自行 fork）。
 
 ## 四、決策
 
