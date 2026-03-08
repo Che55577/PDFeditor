@@ -107,13 +107,21 @@ jobs:
           cd vendor
           zip -ry "../localpdf-pyext-${{ runner.os }}-${{ runner.arch }}.zip" pyext
 
-      - name: 附加擴充包至 GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: localpdf-pyext-*.zip
+      - name: 附加擴充包至 GitHub Release（Windows）
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${env:GITHUB_REF_NAME}" "localpdf-pyext-Windows-${{ runner.arch }}.zip" --clobber --repo "${env:GITHUB_REPOSITORY}"
+
+      - name: 附加擴充包至 GitHub Release（macOS / Linux）
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os != 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" "localpdf-pyext-${{ runner.os }}-${{ runner.arch }}.zip" --clobber --repo "${GITHUB_REPOSITORY}"
 
       - name: 上傳擴充包 Artifact
         uses: actions/upload-artifact@v4
@@ -123,7 +131,7 @@ jobs:
 
   finalize-release:
     needs: publish-tauri
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: always() && startsWith(github.ref, 'refs/tags/v') && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: write

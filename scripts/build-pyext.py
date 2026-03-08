@@ -87,7 +87,7 @@ PRUNE_GLOBS = [
     "lib/tk*",
     "lib/itcl*",
     "lib/tdbc*",
-    "lib/thread*",
+    "lib/thread[0-9]*",
     "lib/pkgconfig",
     "lib/python*/config-*",
 ]
