@@ -1,5 +1,11 @@
 # LocalPDF
 
+[![CI](https://github.com/Che55577/PDFeditor/actions/workflows/ci.yml/badge.svg)](https://github.com/Che55577/PDFeditor/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+![Platform: Windows | macOS | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+
+[English](README.en.md) | [繁體中文](README.md)
+
 在本機處理 PDF 的工具箱。檔案永遠不離開這台裝置，處理過程中的暫存檔在你存檔或關閉視窗後立即抹除。
 
 目前支援：**壓縮**、**合併**、**擷取頁面**、**移除頁面**、**旋轉**、**裁切**、**分割**、
