@@ -143,17 +143,198 @@ const orderedSelection = (): ToolSpec[] =>
 
 /** 路徑 → 縮圖的 blob URL。算過就留著，換工具重畫清單時不必再算一次。 */
 const thumbs = new Map<string, string>();
+/** `${path}#${page}` → 單頁縮圖的 blob URL（供視覺化多頁排版器使用）。 */
+const pageThumbs = new Map<string, string>();
+const pageThumbsPending = new Set<string>();
 
 /** 背景產生縮圖。失敗就算了——沒有縮圖只是少了預覽，不該打斷任何事。 */
 async function loadThumb(path: string) {
   if (thumbs.has(path) || !path.toLowerCase().endsWith(".pdf")) return;
   try {
     const buf = await invoke<ArrayBuffer>("thumbnail", { path });
-    thumbs.set(path, URL.createObjectURL(new Blob([buf], { type: "image/jpeg" })));
+    const url = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+    thumbs.set(path, url);
+    pageThumbs.set(`${path}#1`, url);
     render();
   } catch {
     /* 沒有縮圖不影響功能 */
   }
+}
+
+async function loadPageThumb(path: string, page: number) {
+  const key = `${path}#${page}`;
+  if (pageThumbs.has(key) || pageThumbsPending.has(key) || !path.toLowerCase().endsWith(".pdf")) {
+    return;
+  }
+  pageThumbsPending.add(key);
+  try {
+    const buf = await invoke<ArrayBuffer>("thumbnail", { path, page });
+    const url = URL.createObjectURL(new Blob([buf], { type: "image/jpeg" }));
+    pageThumbs.set(key, url);
+    const img = document.querySelector<HTMLImageElement>(
+      `#orgGrid .pagecard[data-page="${page}"] img`,
+    );
+    if (img) img.src = url;
+  } catch {
+    /* 沒有縮圖不影響功能 */
+  } finally {
+    pageThumbsPending.delete(key);
+  }
+}
+
+// ---- 視覺化多頁縮圖網格排版器 (Page Organizer) ----
+
+let orgSourcePath = "";
+let orgOrder: number[] = [];
+const orgSelected = new Set<number>();
+let dragFromIndex: number | null = null;
+
+function activePageInputId(): string | null {
+  if (selected.has("extract")) return "extractPages";
+  if (selected.has("remove")) return "removePages";
+  if (selected.has("rotate")) return "rotatePages";
+  if (selected.has("crop")) return "cropPages";
+  return null;
+}
+
+function syncOrgToInput() {
+  const inputId = activePageInputId();
+  if (!inputId) return;
+  const orderedPicked = orgOrder.filter((n) => orgSelected.has(n));
+  $<HTMLInputElement>(inputId).value = orderedPicked.join(", ");
+}
+
+function moveOrgPage(index: number, to: number) {
+  if (to < 0 || to >= orgOrder.length || index === to) return;
+  const [moved] = orgOrder.splice(index, 1);
+  orgOrder.splice(to, 0, moved);
+  // 調整順序時若尚未勾選 extract，自動切換至 extract 並全選尚未挑選的頁面以完整保留重排結果
+  if (!selected.has("extract")) {
+    selected.delete("remove");
+    selected.add("extract");
+  }
+  if (orgSelected.size === 0) {
+    for (const p of orgOrder) orgSelected.add(p);
+  }
+  syncOrgToInput();
+  render();
+}
+
+function renderOrganizer() {
+  const orgEl = document.getElementById("pageOrganizer");
+  const gridEl = document.getElementById("orgGrid");
+  if (!orgEl || !gridEl) return;
+
+  const inputId = activePageInputId();
+  const pdfFile = files.find((f) => !f.error && f.pages && f.pages >= 1);
+  if (!inputId || !pdfFile || !pdfFile.pages) {
+    orgEl.hidden = true;
+    return;
+  }
+
+  orgEl.hidden = false;
+  const maxPages = Math.min(pdfFile.pages, 60);
+  if (orgSourcePath !== pdfFile.path || orgOrder.length !== maxPages) {
+    orgSourcePath = pdfFile.path;
+    orgOrder = Array.from({ length: maxPages }, (_, i) => i + 1);
+    orgSelected.clear();
+    if (selected.has("extract")) {
+      for (const p of orgOrder) orgSelected.add(p);
+      syncOrgToInput();
+    }
+  }
+
+  gridEl.innerHTML = "";
+  orgOrder.forEach((pageNum, idx) => {
+    const isSel = orgSelected.has(pageNum);
+    const card = document.createElement("div");
+    card.className = isSel ? "pagecard selected" : "pagecard";
+    card.dataset.page = String(pageNum);
+    card.dataset.index = String(idx);
+    card.draggable = true;
+    card.tabIndex = 0;
+    card.setAttribute("role", "listitem");
+    card.setAttribute("aria-selected", String(isSel));
+
+    const thumbBox = document.createElement("div");
+    thumbBox.className = "pagecard-thumb";
+    const key = `${pdfFile.path}#${pageNum}`;
+    const img = document.createElement("img");
+    img.alt = `Page ${pageNum}`;
+    const existingUrl = pageThumbs.get(key);
+    if (existingUrl) {
+      img.src = existingUrl;
+    } else {
+      void loadPageThumb(pdfFile.path, pageNum);
+    }
+    thumbBox.append(img);
+
+    const bar = document.createElement("div");
+    bar.className = "pagecard-bar";
+
+    const leftBtn = document.createElement("button");
+    leftBtn.type = "button";
+    leftBtn.className = "ghost tiny org-left";
+    leftBtn.textContent = "←";
+    leftBtn.disabled = idx === 0;
+    leftBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      moveOrgPage(idx, idx - 1);
+    };
+
+    const badge = document.createElement("span");
+    badge.textContent = `#${pageNum}`;
+
+    const rightBtn = document.createElement("button");
+    rightBtn.type = "button";
+    rightBtn.className = "ghost tiny org-right";
+    rightBtn.textContent = "→";
+    rightBtn.disabled = idx === orgOrder.length - 1;
+    rightBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      moveOrgPage(idx, idx + 1);
+    };
+
+    bar.append(leftBtn, badge, rightBtn);
+    card.append(thumbBox, bar);
+
+    const togglePage = () => {
+      if (orgSelected.has(pageNum)) orgSelected.delete(pageNum);
+      else orgSelected.add(pageNum);
+      syncOrgToInput();
+      render();
+    };
+
+    card.onclick = togglePage;
+    card.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        togglePage();
+      } else if (ev.key === "ArrowLeft") {
+        ev.preventDefault();
+        moveOrgPage(idx, idx - 1);
+      } else if (ev.key === "ArrowRight") {
+        ev.preventDefault();
+        moveOrgPage(idx, idx + 1);
+      }
+    };
+
+    card.ondragstart = () => {
+      dragFromIndex = idx;
+    };
+    card.ondragover = (ev) => {
+      ev.preventDefault();
+    };
+    card.ondrop = (ev) => {
+      ev.preventDefault();
+      if (dragFromIndex !== null && dragFromIndex !== idx) {
+        moveOrgPage(dragFromIndex, idx);
+      }
+      dragFromIndex = null;
+    };
+
+    gridEl.append(card);
+  });
 }
 
 async function addFiles(paths: string[]) {
@@ -351,7 +532,7 @@ function parsePages(spec: string, max: number): number[] {
       throw new Error(`看不懂的頁碼寫法：${chunk}`);
     }
   }
-  return [...out].sort((a, b) => a - b);
+  return [...out];
 }
 
 /** `#rrggbb` → PDF 用的 0–1 三分量。 */
@@ -676,6 +857,7 @@ function renderResults() {
 
 function render() {
   renderFiles();
+  renderOrganizer();
   renderResults();
 
   for (const el of document.querySelectorAll<HTMLElement>("[data-for]")) {
@@ -1052,6 +1234,14 @@ function applyLang() {
   $<HTMLElement>("dropOr").textContent = ui.dropOr;
   $<HTMLButtonElement>("browse").textContent = ui.browse;
   installPyextBtn.textContent = ui.installPyext;
+  const orgTitleEl = document.getElementById("orgTitle");
+  if (orgTitleEl) orgTitleEl.textContent = ui.orgTitle;
+  const orgAllBtn = document.getElementById("orgSelectAll");
+  if (orgAllBtn) orgAllBtn.textContent = ui.orgSelectAll;
+  const orgClearBtn = document.getElementById("orgClearSel");
+  if (orgClearBtn) orgClearBtn.textContent = ui.orgClearSel;
+  const orgResetBtn = document.getElementById("orgResetOrder");
+  if (orgResetBtn) orgResetBtn.textContent = ui.orgResetOrder;
   const sumTitle = document.querySelector<HTMLElement>(".summary-title");
   if (sumTitle) sumTitle.textContent = ui.summaryTitle;
   $<HTMLInputElement>("toolFilter").placeholder = ui.filterPlaceholder;
@@ -1086,6 +1276,30 @@ async function openFilePicker() {
 }
 
 $<HTMLButtonElement>("browse").onclick = openFilePicker;
+const orgAllBtn = document.getElementById("orgSelectAll");
+if (orgAllBtn) {
+  orgAllBtn.onclick = () => {
+    for (const p of orgOrder) orgSelected.add(p);
+    syncOrgToInput();
+    render();
+  };
+}
+const orgClearBtn = document.getElementById("orgClearSel");
+if (orgClearBtn) {
+  orgClearBtn.onclick = () => {
+    orgSelected.clear();
+    syncOrgToInput();
+    render();
+  };
+}
+const orgResetBtn = document.getElementById("orgResetOrder");
+if (orgResetBtn) {
+  orgResetBtn.onclick = () => {
+    orgOrder.sort((a, b) => a - b);
+    syncOrgToInput();
+    render();
+  };
+}
 dropEl.onkeydown = (e) => {
   if (e.key === "Enter" || e.key === " ") {
     e.preventDefault();

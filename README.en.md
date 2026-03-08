@@ -137,6 +137,30 @@ Always use the **"Redact"** mode in the Annotation Editor: it invokes `applyReda
 
 ---
 
+## Headless CLI Mode
+
+In addition to the desktop GUI, the `localpdf` binary includes a built-in **Headless CLI Mode** for shell scripting and automated batch workflows:
+
+```bash
+# Show CLI usage and available subcommands
+localpdf --help
+
+# Extract and reorder pages (page 3 first, followed by pages 1–2)
+localpdf extract contract.pdf --pages 3,1-2 -o reordered.pdf
+
+# Merge multiple PDFs while preserving bookmarks and form fields
+localpdf merge part1.pdf part2.pdf -o combined.pdf
+
+# Compress PDF (extreme | recommended | low)
+localpdf compress report.pdf --level recommended -o report_small.pdf
+
+# AES-256 encryption & decryption
+localpdf encrypt secret.pdf --user-pw "MyPass123" -o encrypted.pdf
+localpdf decrypt encrypted.pdf --password "MyPass123" -o unlocked.pdf
+```
+
+---
+
 ## Building from Source & Contributing
 
 For an in-depth look at internal engine design, empirical compression benchmarks, and font subsetting internals, see [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md).

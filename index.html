@@ -39,6 +39,18 @@
         <div id="tools" class="tool-groups"></div>
       </details>
 
+      <section id="pageOrganizer" class="organizer" hidden aria-label="視覺化多頁縮圖排版器">
+        <div class="organizer-head">
+          <strong id="orgTitle">視覺化頁面排版（點擊選取，拖曳或按 ← → 調整順序）</strong>
+          <div class="organizer-actions">
+            <button id="orgSelectAll" type="button" class="ghost tiny">全選</button>
+            <button id="orgClearSel" type="button" class="ghost tiny">全不選</button>
+            <button id="orgResetOrder" type="button" class="ghost tiny">重設順序</button>
+          </div>
+        </div>
+        <div id="orgGrid" class="organizer-grid" role="list"></div>
+      </section>
+
       <div id="panels" class="panels">
         <fieldset class="levels" data-for="compress">
           <legend>壓縮程度</legend>

@@ -137,6 +137,30 @@ PDF 格式本質上是「帶有絕對座標的字元繪製指令」，檔案內�
 
 ---
 
+## Headless CLI 命令列批次模式
+
+除了桌面圖形介面外，`localpdf` 執行檔亦內建 **Headless CLI 模式**，方便開發者在 Shell 腳本或 CI/CD 管線中批次自動化處理 PDF：
+
+```bash
+# 查看所有 CLI 指令與參數說明
+localpdf --help
+
+# 依指定順序擷取並重排頁面（第 3 頁排最前，接著第 1–2 頁）
+localpdf extract contract.pdf --pages 3,1-2 -o reordered.pdf
+
+# 合併多份 PDF（保留書籤、連結與表單欄位）
+localpdf merge part1.pdf part2.pdf -o combined.pdf
+
+# 壓縮 PDF（extreme | recommended | low）
+localpdf compress report.pdf --level recommended -o report_small.pdf
+
+# AES-256 加密與解密
+localpdf encrypt secret.pdf --user-pw "MyPass123" -o encrypted.pdf
+localpdf decrypt encrypted.pdf --password "MyPass123" -o unlocked.pdf
+```
+
+---
+
 ## 從原始碼建置與開發
 
 完整的技術架構、引擎分工與壓縮／轉檔實測基準數據，請參閱 [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md)。
