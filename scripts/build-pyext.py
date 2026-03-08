@@ -26,6 +26,11 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 PBS_TAG = "20261021"
 PY_VERSION = "3.11.17"
 ROOT = Path(__file__).parent.parent
@@ -119,21 +124,31 @@ def fetch(url: str, dest: Path) -> Path:
 
 
 def run(*args: str) -> None:
-    result = subprocess.run(args, capture_output=True, text=True)
+    result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         tail = (result.stderr or result.stdout).strip().splitlines()[-6:]
         raise SystemExit("指令失敗：" + " ".join(args) + "\n" + "\n".join(tail))
 
 
 def remove_path(path: Path) -> int:
-    if path.is_symlink() or path.is_file():
-        size = 0 if path.is_symlink() else path.stat().st_size
-        path.unlink(missing_ok=True)
-        return size
-    if path.is_dir():
-        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file() and not f.is_symlink())
-        shutil.rmtree(path, ignore_errors=True)
-        return size
+    try:
+        if path.is_symlink() or path.is_file():
+            size = 0 if path.is_symlink() else path.stat().st_size
+            try:
+                path.unlink(missing_ok=True)
+            except PermissionError:
+                try:
+                    path.chmod(0o777)
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return size
+        if path.is_dir():
+            size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file() and not f.is_symlink())
+            shutil.rmtree(path, ignore_errors=True)
+            return size
+    except Exception:
+        pass
     return 0
 
 
@@ -175,10 +190,15 @@ def extract_pbs(archive: Path, dest: Path) -> None:
     """解開 python-build-standalone，剝掉頂層的 python/ 目錄。"""
     tmp = dest.parent / "_pyext_extract"
     if tmp.exists():
-        shutil.rmtree(tmp)
+        shutil.rmtree(tmp, ignore_errors=True)
     with tarfile.open(archive, "r:gz") as tar:
-        tar.extractall(tmp, filter="data")
+        try:
+            tar.extractall(tmp, filter="data")
+        except TypeError:
+            tar.extractall(tmp)
     inner = tmp / "python"
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
     inner.replace(dest)
     shutil.rmtree(tmp, ignore_errors=True)
 
