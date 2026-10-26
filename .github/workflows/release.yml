@@ -124,7 +124,7 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" "localpdf-pyext-${{ runner.os }}-${{ runner.arch }}.zip" --clobber --repo "${GITHUB_REPOSITORY}"
 
       - name: 上傳擴充包 Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: localpdf-pyext-${{ runner.os }}-${{ runner.arch }}
           path: localpdf-pyext-*.zip
