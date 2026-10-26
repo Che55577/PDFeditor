@@ -1,6 +1,6 @@
 [package]
 name = "localpdf"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local offline privacy-first PDF toolbox"
 authors = ["Che55577 and LocalPDF Contributors"]
 license = "AGPL-3.0-only"
