@@ -47,7 +47,7 @@ jobs:
           workspaces: src-tauri
 
       # Ghostscript 在 macOS 上要從原始碼編譯（約 2~3 分鐘），快取起來省下重編時間
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             vendor/ghostscript
