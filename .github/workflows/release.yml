@@ -149,7 +149,7 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: 產生 GitHub Sigstore 建置來源證明 (Build Provenance Attestation)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist-assets/*"
 
