@@ -60,7 +60,7 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             vendor/ghostscript
